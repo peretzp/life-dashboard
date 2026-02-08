@@ -1,0 +1,11 @@
+{
+  "name": "life-dashboard",
+  "version": "1.0.0",
+  "description": "PracticeLife OS — Living Dashboard",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {}
+}
