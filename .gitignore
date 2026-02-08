@@ -1,1 +1,11 @@
 node_modules/
+*.log
+
+# Secrets — never commit
+.env
+.env.*
+*.pem
+*.key
+*.secret
+auth.json
+credentials.*
