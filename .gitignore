@@ -9,3 +9,5 @@ node_modules/
 *.secret
 auth.json
 credentials.*
+*.err
+*.log
