@@ -45,6 +45,8 @@ function getState() {
   const protocolExists = fs.existsSync(protocolPath);
   const apiLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:3001/health 2>/dev/null') === '200';
   const promptBrowserLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:3002/api/stats 2>/dev/null') === '200';
+  const contactVerifyLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:3003/ 2>/dev/null') === '200';
+  const downloadDaemonLive = run('launchctl list | grep -q download-daemon && echo "1" || echo "0"', 1000) === '1';
 
   // Parse all session logs for instance history
   let instances = [];
@@ -122,6 +124,25 @@ function getState() {
     } catch {}
   }
 
+  // Calendar (Google Calendar synced via Apple Calendar / EventKit)
+  let calEvents = [];
+  let calFetched = null;
+  try {
+    const calRaw = run(`${__dirname}/cal-events 7 2>/dev/null`, 5000);
+    if (calRaw && calRaw.startsWith('{')) {
+      const calData = JSON.parse(calRaw);
+      calEvents = (calData.events || []).map(e => ({
+        title: e.title,
+        start: e.start,
+        end: e.end,
+        calendar: e.calendar,
+        allDay: e.allDay,
+        location: e.location,
+      }));
+      calFetched = calData.fetched;
+    }
+  } catch {}
+
   // Prompt store stats
   const promptStats = run('node ~/.claude/prompt-store.js stats 2>/dev/null');
   const promptTotal = (promptStats.match(/Total prompts:\s+(\d+)/) || [])[1] || '0';
@@ -140,9 +161,116 @@ function getState() {
     downloads: { total: downloads, organized_folders: downloadsOrg, loose_files: downloadsLoose },
     memoryatlas: { total: atlasTotal, hours: atlasHours, transcribed: atlasTranscribed, published: atlasPublished },
     vault: { total_notes: obsidianFiles, home_updated: homeUpdated },
-    agents: { sessionLogs, protocolActive: protocolExists, apiLive, promptBrowserLive, workers, handoffs, promptTotal, promptSessions, instances },
+    calendar: { events: calEvents, fetched: calFetched },
+    agents: { sessionLogs, protocolActive: protocolExists, apiLive, promptBrowserLive, contactVerifyLive, downloadDaemonLive, workers, handoffs, promptTotal, promptSessions, instances },
     wallet,
   };
+}
+
+// ─── Dependencies: what's blocked on Peretz and what it holds up ──────
+
+function getDependencies() {
+  const HOME_MD = path.join(VAULT, 'Dashboards/Home.md');
+  const SESSION_LOGS = path.join(process.env.HOME, '.claude/session-logs');
+
+  // Current Claude work from latest session log
+  let currentWork = [];
+  try {
+    const logs = fs.readdirSync(SESSION_LOGS)
+      .filter(f => f.endsWith('.md'))
+      .map(f => ({ name: f, mtime: fs.statSync(path.join(SESSION_LOGS, f)).mtime }))
+      .sort((a, b) => b.mtime - a.mtime);
+    if (logs.length > 0) {
+      const latest = fs.readFileSync(path.join(SESSION_LOGS, logs[0].name), 'utf8');
+      const agentMatch = latest.match(/\*\*Instance\*\*:\s*(.+)/);
+      const focusMatch = latest.match(/\*\*Focus\*\*:\s*(.+)/);
+      const timelineMatch = latest.match(/## Timeline([\s\S]*?)(?=\n## |$)/);
+      const agent = agentMatch ? agentMatch[1].trim() : 'Claude';
+      const focus = focusMatch ? focusMatch[1].trim() : '';
+      let recentActions = [];
+      if (timelineMatch) {
+        const lines = timelineMatch[1].split('\n').filter(l => l.trim().startsWith('-')).slice(-5);
+        recentActions = lines.map(l => l.replace(/^-\s*/, '').trim());
+      }
+      currentWork.push({ agent, focus, recentActions, session: logs[0].name.replace('.md', '') });
+    }
+  } catch {}
+
+  // Blockers from vault Home.md "Blocked (Need Your Action)"
+  let blockers = [];
+  try {
+    const home = fs.readFileSync(HOME_MD, 'utf8');
+    const blockedSection = home.match(/## Blocked \(Need Your Action\)([\s\S]*?)(?=\n## |$)/);
+    if (blockedSection) {
+      const rows = blockedSection[1].split('\n').filter(l => l.includes('|') && !l.includes('---'));
+      for (const row of rows.slice(1)) { // skip header
+        const cols = row.split('|').map(c => c.trim()).filter(Boolean);
+        if (cols.length >= 2) {
+          blockers.push({ item: cols[0], blocker: cols[1], unblocks: [] });
+        }
+      }
+    }
+  } catch {}
+
+  // What each blocker unblocks (from Active Threads)
+  const threads = getThreads();
+  for (const blocker of blockers) {
+    for (const thread of threads) {
+      if (thread.status === 'done') continue;
+      const desc = thread.desc.toLowerCase();
+      const item = blocker.item.toLowerCase();
+      // Match explicit dependencies
+      if (desc.includes('needs ' + item) || desc.includes('blocked') && desc.includes(item)) {
+        blocker.unblocks.push(thread.name);
+      }
+      // Match common patterns
+      else if (
+        (item.includes('elements') && desc.includes('elements')) ||
+        (item.includes('time machine') && (desc.includes('backup') || desc.includes('time machine'))) ||
+        (item.includes('linkedin') && desc.includes('linkedin')) ||
+        (item.includes('google') && desc.includes('location'))
+      ) {
+        blocker.unblocks.push(thread.name);
+      }
+    }
+  }
+
+  return { currentWork, blockers, timestamp: new Date().toISOString() };
+}
+
+// ─── Threads: parse MEMORY.md Active Threads ─────────────────────────
+
+function getThreads() {
+  const MEMORY_PATH = path.join(process.env.HOME, '.claude/projects/-Users-peretz-1/memory/MEMORY.md');
+  let threads = [];
+  try {
+    const content = fs.readFileSync(MEMORY_PATH, 'utf8');
+    const section = content.match(/## Active Threads\n([\s\S]*?)(?=\n## |\n# |$)/);
+    if (!section) return threads;
+    const lines = section[1].split('\n').filter(l => l.trim().startsWith('-'));
+    for (const line of lines) {
+      const stripped = line.replace(/^-\s*/, '').trim();
+      // Match: **Name** — description
+      const match = stripped.match(/^\*\*([^*]+)\*\*\s*[—–-]+\s*(.*)/);
+      if (!match) continue;
+      const name = match[1].trim();
+      const desc = match[2].trim();
+      // Detect status from keywords — order matters (most specific first)
+      let status = 'pending';
+      const u = desc.toUpperCase();
+      if (/\b(TOP PRIORITY|CRITICAL|URGENT)\b/.test(u)) status = 'critical';
+      else if (/\b(IN PROGRESS|RUNNING|LIVE)\b/.test(u)) status = 'running';
+      else if (/\bCOMPLETE\b/.test(u) || /^DONE[^A-Z]/.test(u) || /:\s*DONE\b/.test(u)) status = 'done';
+      else if (/\b(BLOCKED|WAITING)\b/.test(u)) status = 'blocked';
+      else if (/\bNEW\b|\bVISION\b/.test(u)) status = 'running';
+      else if (/\bDONE\b/.test(u)) status = 'done';
+      // Extract next action — text after last period or colon
+      const nextMatch = desc.match(/[:.]\s*([^.]+)$/);
+      const next = nextMatch ? nextMatch[1].trim() : '';
+      threads.push({ name, desc, status, next });
+    }
+  } catch {}
+  return threads;
 }
 
 // ─── History: time-series metric snapshots ───────────────────────────
@@ -206,14 +334,17 @@ const TASKS = [
   { id: 26, name: 'Password Merge', status: 'running', icon: '🔄', detail: 'Chrome encrypted on SD4Loco → Apple Passwords' },
   { id: 22, name: 'Google Drive Organization', status: 'done', icon: '✅', detail: '2.6GB IB archive cataloged — 2,198 files across 5 dirs. Manifest at ~/Documents/GoogleDrive-IB/' },
   { id: 17, name: 'Living Resume', status: 'done', icon: '✅', detail: 'Master resume consolidated (12KB) + 66-file inventory. At vault Efforts/Active/Living Resume/' },
-  { id: 13, name: 'Contact Dedup', status: 'running', icon: '🔄', detail: 'Phase 1b+1c DONE (9,506→6,361 golden). Phase 1d: enrichment pending' },
+  { id: 13, name: 'Contact Dedup', status: 'done', icon: '✅', detail: '9,506→6,061 clean (email-as-name 99.5%, 716 vault notes, relationship health, VCF export)' },
   { id: 34, name: 'Codex ↔ Claude Collaboration', status: 'running', icon: '🔄', detail: 'Multi-agent protocol live, PracticeLife API on :3001' },
   { id: 35, name: 'PracticeLife API', status: 'running', icon: '🔄', detail: 'Atlas + Vault + System + Agents endpoints at :3001' },
   // === PENDING ===
+  { id: 38, name: 'Google Calendar (Ground Truth)', status: 'running', icon: '🔄', detail: 'EventKit binary reads Apple Calendar (synced from Google). Live on dashboard.' },
   { id: 33, name: 'Google Takeout (Location History)', status: 'pending', icon: '⏳', detail: 'For MemoryAtlas Phase 4 location enrichment' },
   { id: 14, name: 'Apple Notes → Obsidian', status: 'done', icon: '✅', detail: '948 notes exported to vault Resources/Reference/Apple Notes/' },
   { id: 15, name: 'Roam → Obsidian', status: 'pending', icon: '⏳', detail: 'No data on this Mac — needs web export from roamresearch.com' },
   { id: 18, name: 'Calendar Backfill', status: 'done', icon: '✅', detail: '425 daily notes backfilled from ICS files into Journal/Daily/' },
+  { id: 39, name: 'Personal Body Kit — Charging Lane', status: 'pending', icon: '⏳', detail: 'Apple Watch + Shokz always wired at permanent station. Never leave uncharged.' },
+  { id: 40, name: 'Amazon Household — Sofia + Kevin', status: 'pending', icon: '⏳', detail: 'amazon.com/myh/manage — add Sofia + Kevin as adult members. Shared Prime, food orders, house.' },
   { id: 19, name: 'VPN Setup (Mullvad+Tailscale)', status: 'pending', icon: '⏳' },
   { id: 20, name: 'Mastra.ai Bootstrap', status: 'pending', icon: '⏳' },
   { id: 23, name: 'UniFi Network Hardening', status: 'pending', icon: '⏳' },
@@ -224,6 +355,8 @@ const TASKS = [
   // === DONE ===
   { id: 25, name: 'Vault Restructure', status: 'done', icon: '✅', detail: 'ACE+PARA — 7 clean dirs, zero loose files' },
   { id: 36, name: 'Prompt Browser App', status: 'done', icon: '✅', detail: 'port 3002, browse/search/sessions/stats' },
+  { id: 41, name: 'Contact Verification Web App', status: 'running', icon: '🔄', detail: 'Privacy-first verification interface on port 3003. Deploy to verify.peretzpartensky.com pending.' },
+  { id: 42, name: 'Self-Organizing Downloads', status: 'running', icon: '🔄', detail: 'LaunchAgent daemon monitoring ~/Downloads/ with 14 routing rules via fswatch. Auto-routes by type+context.' },
   { id: 37, name: 'Terminal Spruce-up', status: 'done', icon: '✅', detail: 'Starship, MOTD, fzf themed, LaunchAgent' },
   { id: 1, name: 'Terminal Power Config', status: 'done', icon: '✅' },
   { id: 2, name: 'GitHub Dual-Account Setup', status: 'done', icon: '✅' },
@@ -254,6 +387,30 @@ function workerStatusColor(dotCls) {
   if (dotCls === 'parked') return '#ffaa00';
   if (dotCls === 'down') return '#ff4444';
   return '#555';
+}
+
+// ─── Shared Navigation Bar ──────────────────────────────────────────────────
+
+function renderNav(activePage = 'dashboard') {
+  const pages = [
+    { path: '/', name: 'Dashboard', key: 'dashboard' },
+    { path: '/blockers', name: '🚧 Blockers', key: 'blockers' },
+    { path: '/agents', name: 'Agents', key: 'agents' },
+    { path: '/endpoints', name: 'API', key: 'endpoints' },
+    { path: '/deps', name: 'Dependencies', key: 'deps' },
+    { path: '/plan', name: 'Plan Tracker', key: 'plan' },
+    { path: '/stream', name: 'Life Stream', key: 'stream' },
+    { path: '/threads', name: 'Threads', key: 'threads' },
+  ];
+
+  return `<div class="nav" style="display:flex;gap:16px;margin-bottom:12px">\n` +
+    pages.map(p => {
+      const isActive = p.key === activePage;
+      const color = isActive ? '#00ff88' : '#555';
+      const border = isActive ? '#00ff88' : '#222';
+      return `  <a href="${p.path}" style="color:${color};font-size:13px;padding:4px 12px;border:1px solid ${border};border-radius:6px;text-decoration:none">${p.name}</a>`;
+    }).join('\n') +
+    '\n</div>';
 }
 
 function renderHTML(state) {
@@ -363,11 +520,7 @@ function renderHTML(state) {
 </style>
 </head><body>
 
-<div class="nav" style="display:flex;gap:16px;margin-bottom:12px">
-  <a href="/" style="color:#00ff88;font-size:13px;padding:4px 12px;border:1px solid #00ff88;border-radius:6px;text-decoration:none">Dashboard</a>
-  <a href="/plan" style="color:#555;font-size:13px;padding:4px 12px;border:1px solid #222;border-radius:6px;text-decoration:none">Plan Tracker</a>
-  <a href="/stream" style="color:#555;font-size:13px;padding:4px 12px;border:1px solid #222;border-radius:6px;text-decoration:none">Life Stream</a>
-</div>
+${renderNav('dashboard')}
 
 <h1>Ω₀ PracticeLife OS</h1>
 <div class="subtitle">Alpha Omega — Iterate, Don't Annihilate <span class="live-indicator" style="margin-left:12px"><span class="dot live"></span> <span id="live-ago">live</span></span></div>
@@ -469,6 +622,29 @@ function renderHTML(state) {
 </div>
 
 <div class="section">
+  <h2>📅 Ground Truth Calendar <span style="color:#555;font-size:11px;font-weight:normal;margin-left:8px">Google Calendar · next 7 days · ${state.calendar.events.length} events</span></h2>
+  ${state.calendar.events.length === 0 ? '<div style="color:#555;font-size:13px">No events found — calendar binary may need permissions. Run: <code style="color:#00ff88">~/life-dashboard/cal-events 7</code></div>' : ''}
+  <table>
+    <tr><th>When</th><th>Event</th><th>Calendar</th><th>Location</th></tr>
+    ${state.calendar.events.map(e => {
+      const d = new Date(e.start);
+      const now = new Date();
+      const isToday = d.toDateString() === now.toDateString();
+      const isTomorrow = d.toDateString() === new Date(now.getTime() + 86400000).toDateString();
+      const dayStr = isToday ? 'Today' : isTomorrow ? 'Tomorrow' : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
+      const timeStr = e.allDay ? 'All day' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
+      const rowStyle = isToday ? 'background:#0a1a0a;' : '';
+      return `<tr style="${rowStyle}">
+        <td style="white-space:nowrap;color:${isToday ? '#00ff88' : '#888'}">${dayStr}<br><span style="color:#555;font-size:11px">${timeStr}</span></td>
+        <td style="color:${isToday ? '#e0e0e0' : '#aaa'};font-weight:${isToday ? 'bold' : 'normal'}">${e.title}</td>
+        <td style="color:#555;font-size:12px">${e.calendar}</td>
+        <td style="color:#555;font-size:12px">${e.location || ''}</td>
+      </tr>`;
+    }).join('')}
+  </table>
+</div>
+
+<div class="section">
   <h2>Agent Collaboration</h2>
   <div class="agent-grid">
     <div class="agent-card">
@@ -476,6 +652,8 @@ function renderHTML(state) {
       <div class="agent-status"><span class="dot live"></span> <a href="http://localhost:3000" style="color:#e0e0e0">Dashboard</a> <span style="color:#555">:3000</span></div>
       <div class="agent-status"><span class="dot ${state.agents.apiLive ? 'live' : 'down'}"></span> <a href="http://localhost:3001" style="color:#e0e0e0">PracticeLife API</a> <span style="color:#555">:3001</span></div>
       <div class="agent-status"><span class="dot ${state.agents.promptBrowserLive ? 'live' : 'down'}"></span> <a href="http://localhost:3002" style="color:#e0e0e0">Prompt Browser</a> <span style="color:#555">:3002</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.contactVerifyLive ? 'live' : 'down'}"></span> <a href="http://localhost:3003" style="color:#e0e0e0">Contact Verify</a> <span style="color:#555">:3003</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.downloadDaemonLive ? 'live' : 'down'}"></span> Download Daemon <span style="color:#555">(bg)</span></div>
       <div class="agent-status"><span class="dot ${state.agents.protocolActive ? 'live' : 'off'}"></span> Agent Protocol</div>
       <div style="margin-top:8px;color:#555;font-size:11px">${state.agents.promptTotal} prompts · ${state.agents.promptSessions} sessions</div>
     </div>
@@ -890,11 +1068,7 @@ function renderPlanHTML() {
 </style>
 </head><body>
 
-<div class="nav">
-  <a href="/">Dashboard</a>
-  <a href="/plan" class="active">Plan Tracker</a>
-  <a href="/stream">Life Stream</a>
-</div>
+${renderNav('plan')}
 
 <h1>${plan.planName || 'Execution Plan'}</h1>
 <div class="subtitle">Started ${plan.startedAt ? new Date(plan.startedAt).toLocaleString() : 'unknown'} · Target: ${plan.targetPct || '??'}%</div>
@@ -1018,6 +1192,27 @@ function probeAllStreams() {
       log.push({ t: now, msg: `iMessage \u2014 database exists but not readable (grant Full Disk Access to node)` });
     }
   } catch(e) { log.push({ t: now, msg: `iMessage \u2014 ${e.message}` }); }
+
+  // ─── Beeper ─────────────────────────────
+  const beeperDb = path.join(HOME, 'Library/Application Support/BeeperTexts/index.db');
+  try {
+    const total = sqliteCount(beeperDb, 'SELECT COUNT(*) FROM mx_room_messages');
+    const rooms = sqliteCount(beeperDb, 'SELECT COUNT(DISTINCT roomID) FROM mx_room_messages');
+    const today = sqliteCount(beeperDb, `SELECT COUNT(*) FROM mx_room_messages WHERE timestamp > ${(Date.now() - 86400000)}`);
+    const week = sqliteCount(beeperDb, `SELECT COUNT(*) FROM mx_room_messages WHERE timestamp > ${(Date.now() - 604800000)}`);
+    if (total) {
+      streams.push({
+        id: 'beeper', domain: 'network', valence: 'pulse', cadence: 'hourly',
+        icon: '\u{1F4E8}', label: 'Beeper',
+        primary: total.toLocaleString(), secondary: `${(rooms || 0).toLocaleString()} conversations`,
+        tertiary: `${today || 0} today \u00B7 ${week || 0} this week`,
+        count: total, signal: total > 5000 ? 'strong' : total > 1000 ? 'medium' : 'weak',
+      });
+      log.push({ t: now, msg: `Beeper \u2014 ${total.toLocaleString()} messages across ${(rooms||0).toLocaleString()} conversations` });
+    } else if (fs.existsSync(beeperDb)) {
+      log.push({ t: now, msg: `Beeper \u2014 database exists but not readable` });
+    }
+  } catch(e) { log.push({ t: now, msg: `Beeper \u2014 ${e.message}` }); }
 
   // ─── Photos ─────────────────────────────
   const photosDb = path.join(HOME, 'Pictures/Photos Library.photoslibrary/database/Photos.sqlite');
@@ -1460,11 +1655,7 @@ h1{color:#00ff88;font-size:28px;margin-bottom:4px}
 </style>
 </head><body>
 
-<div class="nav">
-<a href="/">Dashboard</a>
-<a href="/plan">Plan Tracker</a>
-<a href="/stream" class="active">Life Stream</a>
-</div>
+${renderNav('stream')}
 
 <h1>\u03A9\u2080 Life Stream</h1>
 <div class="sub">Self-assembling portrait of your digital life \u00B7 Probe #${manifest?.probeCount || 1}</div>
@@ -1510,6 +1701,307 @@ setInterval(async()=>{try{const r=await fetch('/stream');const h=await r.text();
 </body></html>`;
 }
 
+// ─── Threads page ────────────────────────────────────────────────────
+
+function renderThreadsHTML() {
+  const threads = getThreads();
+  const statusOrder = { critical: 0, running: 1, blocked: 2, pending: 3, done: 4 };
+  const sorted = [...threads].sort((a, b) => (statusOrder[a.status] ?? 5) - (statusOrder[b.status] ?? 5));
+
+  const chip = {
+    done:     { label: 'DONE',        color: '#00ff88', bg: '#00ff8811', border: '#00ff8833' },
+    running:  { label: 'IN PROGRESS', color: '#00aaff', bg: '#00aaff11', border: '#00aaff33' },
+    blocked:  { label: 'BLOCKED',     color: '#ffaa00', bg: '#ffaa0011', border: '#ffaa0033' },
+    critical: { label: 'CRITICAL',    color: '#ff4444', bg: '#ff444411', border: '#ff444433' },
+    pending:  { label: 'PENDING',     color: '#555',    bg: '#55555511', border: '#55555533' },
+  };
+
+  const counts = { critical: 0, running: 0, blocked: 0, pending: 0, done: 0 };
+  for (const t of threads) counts[t.status] = (counts[t.status] || 0) + 1;
+
+  const cards = sorted.map(t => {
+    const c = chip[t.status] || chip.pending;
+    const opacity = t.status === 'done' ? 'opacity:0.45;' : '';
+    return `<div class="tcard" style="${opacity}border-left:3px solid ${c.border}">
+  <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:8px">
+    <span class="tname">${t.name}</span>
+    <span class="chip" style="color:${c.color};background:${c.bg};border:1px solid ${c.border}">${c.label}</span>
+  </div>
+  <div class="tdesc">${t.desc}</div>
+  ${t.next ? `<div class="tnext">→ ${t.next}</div>` : ''}
+</div>`;
+  }).join('\n');
+
+  return `<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<title>Ω₀ Threads</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
+h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
+.subtitle { color:#666; margin-bottom:20px; font-size:13px; }
+.nav { display:flex; gap:16px; margin-bottom:20px; }
+.nav a { color:#555; font-size:13px; padding:4px 12px; border:1px solid #222; border-radius:6px; text-decoration:none; }
+.nav a:hover, .nav a.active { color:#00ff88; border-color:#00ff88; }
+.summary { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
+.sstat { background:#151515; border:1px solid #222; border-radius:8px; padding:12px 20px; text-align:center; }
+.sstat .sv { font-size:28px; font-weight:bold; }
+.sstat .sl { color:#555; font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
+.sv.critical { color:#ff4444; }
+.sv.running  { color:#00aaff; }
+.sv.blocked  { color:#ffaa00; }
+.sv.pending  { color:#555; }
+.sv.done     { color:#00ff88; }
+.grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px; }
+.tcard { background:#111; border:1px solid #222; border-radius:8px; padding:16px; }
+.tname { font-size:14px; font-weight:bold; color:#e0e0e0; }
+.chip { font-size:10px; font-weight:bold; padding:2px 8px; border-radius:4px; letter-spacing:0.5px; white-space:nowrap; }
+.tdesc { color:#666; font-size:12px; line-height:1.5; margin-top:4px; }
+.tnext { color:#00aaff; font-size:12px; margin-top:8px; opacity:0.8; }
+.timestamp { color:#333; font-size:11px; text-align:right; margin-top:24px; }
+</style>
+</head><body>
+${renderNav('threads')}
+<h1>Ω₀ Active Threads</h1>
+<div class="subtitle">Source: MEMORY.md — Auto-refresh 60s</div>
+
+<div class="summary">
+  <div class="sstat"><div class="sv critical">${counts.critical}</div><div class="sl">Critical</div></div>
+  <div class="sstat"><div class="sv running">${counts.running}</div><div class="sl">In Progress</div></div>
+  <div class="sstat"><div class="sv blocked">${counts.blocked}</div><div class="sl">Blocked</div></div>
+  <div class="sstat"><div class="sv pending">${counts.pending}</div><div class="sl">Pending</div></div>
+  <div class="sstat"><div class="sv done">${counts.done}</div><div class="sl">Done</div></div>
+</div>
+
+<div class="grid">${cards}</div>
+<div class="timestamp">Parsed ${new Date().toLocaleString()} · MEMORY.md</div>
+<script>setInterval(async()=>{try{const r=await fetch('/threads');const h=await r.text();document.open();document.write(h);document.close()}catch{}},60000);</script>
+</body></html>`;
+}
+
+// ─── Blockers (Peretz-only) ──────────────────────────────────────────
+
+function getBlockers() {
+  // Blockers that only Peretz can unblock
+  // Each has: item, blocker, instructions, impact (1-10), unlocks array
+  const blockers = [
+    {
+      item: 'Time Machine Backup',
+      blocker: 'Need to configure Elements-Ready drive in System Preferences',
+      impact: 9,
+      unlocks: ['User Account Merge', 'Safe system upgrades', 'Data recovery safety net', 'Ability to test risky operations'],
+      instructions: [
+        'Open System Settings → General → Time Machine',
+        'Click "+" to add backup disk',
+        'Select "Elements-Ready" from the list',
+        'Click "Set Up Disk"',
+        'Choose encryption preference (recommended: encrypted)',
+        'First backup will start automatically (may take several hours)',
+      ],
+    },
+    {
+      item: 'LinkedIn MCP Manual Login',
+      blocker: 'Need to log into LinkedIn via Claude Desktop browser once',
+      impact: 7,
+      unlocks: ['Contact Dedup enrichment (716 T1 people)', 'LinkedIn profile data mining', 'Professional network mapping', 'Automated connection tracking'],
+      instructions: [
+        'Open Claude Desktop app',
+        'LinkedIn MCP server is already configured',
+        'Trigger any LinkedIn tool (search, profile lookup)',
+        'Playwright browser will open',
+        'Log into LinkedIn manually',
+        'Session will be saved to ~/.linkedin-mcp-profile/',
+        'Close browser when done',
+      ],
+    },
+    {
+      item: 'Google Takeout (Location History)',
+      blocker: 'Need to request Location History export from Google',
+      impact: 6,
+      unlocks: ['MemoryAtlas Phase 4 (location enrichment)', 'Travel timeline reconstruction', 'Location-based memory triggers', 'Geocoded voice memos'],
+      instructions: [
+        'Go to takeout.google.com',
+        'Deselect all products',
+        'Select only "Location History"',
+        'Choose file format: JSON',
+        'Click "Next step" → "Create export"',
+        'Wait for email notification (may take hours/days)',
+        'Download archive when ready',
+        'Extract to ~/Downloads/ or external drive',
+      ],
+    },
+    {
+      item: 'Cursor Privacy Mode Decision',
+      blocker: 'Need to decide whether to enable Cursor Privacy Mode',
+      impact: 5,
+      unlocks: ['Secure coding in Cursor', 'Safe work on sensitive codebases', 'Peace of mind with proprietary code'],
+      instructions: [
+        'Open Cursor Settings',
+        'Navigate to Privacy section',
+        'Review Privacy Mode options:',
+        '  - Disables telemetry',
+        '  - Disables code snippets sent to Cursor servers',
+        '  - May reduce some AI features',
+        'Toggle Privacy Mode ON or OFF based on preference',
+        'Document decision in ~/CURSOR-ROLE-STRATEGY.md',
+      ],
+    },
+    {
+      item: 'VPN Home Access Setup',
+      blocker: 'Need router admin credentials and port forwarding setup',
+      impact: 8,
+      unlocks: ['Remote access to localhost services', 'Work from anywhere', 'Access Life Stream remotely', 'Secure tunnel to home network'],
+      instructions: [
+        'Find router IP (usually 192.168.1.1)',
+        'Locate router admin credentials (on router label or password manager)',
+        'Log into router admin panel',
+        'Enable port forwarding for VPN (e.g., WireGuard port 51820)',
+        'Set up dynamic DNS (or note static IP)',
+        'Install Tailscale or WireGuard on Mac Studio',
+        'Configure VPN client on remote devices',
+        'Test connection from external network',
+      ],
+    },
+    {
+      item: 'Password Merge (Chrome → Apple)',
+      blocker: 'Need to decrypt Chrome password vault on SD4Loco and import',
+      impact: 4,
+      unlocks: ['Unified password management', 'iCloud Keychain sync across devices', 'Auto-fill on iPhone/iPad', 'Decommission Chrome vault'],
+      instructions: [
+        'Open Chrome on Mac Studio',
+        'Go to chrome://settings/passwords',
+        'Click "Export passwords" (requires Mac password)',
+        'Save CSV to secure location (e.g., ~/Documents/temp-passwords.csv)',
+        'Open Safari → Preferences → Passwords',
+        'Click "..." menu → Import Passwords',
+        'Select the exported CSV file',
+        'Verify import success',
+        'Securely delete CSV file (rm + empty trash)',
+      ],
+    },
+    {
+      item: 'Domain Strategy (3 domains)',
+      blocker: 'Need to decide hosting/deployment strategy for tolerableinsanity.com, jalalagood.com, peretzpartensky.com',
+      impact: 6,
+      unlocks: ['Public web presence (L4 Digital Self)', 'Professional portfolio', 'Personal brand', 'Shareable work showcase'],
+      instructions: [
+        'Review current domain status (registrar, expiration)',
+        'Decide content strategy for each domain:',
+        '  - peretzpartensky.com: professional portfolio?',
+        '  - tolerableinsanity.com: blog/writing?',
+        '  - jalalagood.com: project showcase?',
+        'Choose hosting platform (Vercel, Netlify, GitHub Pages)',
+        'Point DNS to chosen platform',
+        'Deploy initial content or placeholder',
+        'Document strategy in vault/Efforts/Active/Digital Self.md',
+      ],
+    },
+  ];
+
+  // Sort by impact (highest first)
+  return blockers.sort((a, b) => b.impact - a.impact);
+}
+
+function renderBlockersHTML() {
+  const blockers = getBlockers();
+  const totalImpact = blockers.reduce((sum, b) => sum + b.impact, 0);
+  const avgImpact = (totalImpact / blockers.length).toFixed(1);
+
+  const blockerCards = blockers.map((b, i) => {
+    const impactColor = b.impact >= 8 ? '#ff4444' : b.impact >= 6 ? '#ffaa00' : '#00aaff';
+    const unlocksList = b.unlocks.map(u => `<li>${u}</li>`).join('');
+    const instructionsList = b.instructions.map(s => `<li>${s}</li>`).join('');
+
+    return `<details class="blocker-card" style="border-left:4px solid ${impactColor}">
+  <summary class="blocker-summary">
+    <div class="blocker-header">
+      <span class="blocker-rank">#${i + 1}</span>
+      <span class="blocker-item">${b.item}</span>
+      <span class="blocker-impact" style="background:${impactColor}22;color:${impactColor}">Impact: ${b.impact}/10</span>
+    </div>
+    <div class="blocker-desc">${b.blocker}</div>
+  </summary>
+  <div class="blocker-content">
+    <div class="blocker-section">
+      <h4>🔓 This Unlocks:</h4>
+      <ul class="blocker-list unlocks">${unlocksList}</ul>
+      <div class="unlock-count">${b.unlocks.length} downstream items</div>
+    </div>
+    <div class="blocker-section">
+      <h4>📋 How to Unblock (Peretz):</h4>
+      <ol class="blocker-instructions">${instructionsList}</ol>
+    </div>
+  </div>
+</details>`;
+  }).join('');
+
+  return `<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<title>🚧 Blockers | PracticeLife</title>
+<meta http-equiv="refresh" content="60">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
+h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
+.subtitle { color:#666; margin-bottom:20px; font-size:13px; }
+
+.summary { display:flex; gap:16px; margin-bottom:24px; }
+.scard { background:#151515; border:1px solid #222; border-radius:8px; padding:12px 20px; text-align:center; flex:1; }
+.scard .num { font-size:32px; font-weight:bold; color:#ff4444; }
+.scard .label { color:#555; font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-top:4px; }
+.scard.impact .num { color:#ffaa00; }
+.scard.unlocks .num { color:#00aaff; }
+
+.blocker-card { background:#111; border-radius:8px; padding:0; margin-bottom:16px; overflow:hidden; }
+.blocker-summary { list-style:none; padding:20px; cursor:pointer; user-select:none; }
+.blocker-summary::-webkit-details-marker { display:none; }
+.blocker-summary::before { content:'▶'; display:inline-block; margin-right:12px; transition:transform 0.2s; color:#555; }
+details[open] .blocker-summary::before { transform:rotate(90deg); }
+
+.blocker-header { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
+.blocker-rank { font-size:20px; font-weight:bold; color:#333; min-width:40px; }
+.blocker-item { font-size:16px; font-weight:bold; color:#e0e0e0; flex:1; }
+.blocker-impact { font-size:11px; font-weight:bold; padding:4px 12px; border-radius:6px; white-space:nowrap; }
+.blocker-desc { color:#999; font-size:13px; line-height:1.5; margin-left:52px; }
+
+.blocker-content { padding:0 20px 20px 20px; border-top:1px solid #1a1a1a; margin-top:12px; padding-top:16px; }
+.blocker-section { margin-bottom:20px; }
+.blocker-section:last-child { margin-bottom:0; }
+.blocker-section h4 { color:#00aaff; font-size:13px; margin-bottom:8px; text-transform:uppercase; letter-spacing:1px; }
+.blocker-list { margin-left:20px; color:#aaa; font-size:13px; line-height:1.8; }
+.blocker-list.unlocks li { color:#00ff88; }
+.blocker-instructions { margin-left:20px; color:#ddd; font-size:13px; line-height:1.8; }
+.blocker-instructions li { margin-bottom:6px; }
+.unlock-count { color:#555; font-size:11px; margin-top:8px; margin-left:20px; }
+
+.timestamp { color:#333; font-size:11px; text-align:right; margin-top:24px; }
+</style>
+</head><body>
+${renderNav('blockers')}
+<h1>🚧 Blockers (Peretz-Only)</h1>
+<div class="subtitle">Ranked by estimated impact value · Click to expand instructions</div>
+
+<div class="summary">
+  <div class="scard">
+    <div class="num">${blockers.length}</div>
+    <div class="label">Active Blockers</div>
+  </div>
+  <div class="scard impact">
+    <div class="num">${avgImpact}</div>
+    <div class="label">Avg Impact</div>
+  </div>
+  <div class="scard unlocks">
+    <div class="num">${blockers.reduce((sum, b) => sum + b.unlocks.length, 0)}</div>
+    <div class="label">Items Blocked</div>
+  </div>
+</div>
+
+${blockerCards}
+
+<div class="timestamp">Last refresh: ${new Date().toLocaleString()}</div>
+</body></html>`;
+}
+
 // ─── Server ──────────────────────────────────────────────────────────
 
 const server = http.createServer((req, res) => {
@@ -1542,10 +2034,65 @@ const server = http.createServer((req, res) => {
     res.end(JSON.stringify(streamData, null, 2));
     return;
   }
+  if (req.url === '/threads') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderThreadsHTML());
+    return;
+  }
+  if (req.url === '/api/threads') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(getThreads(), null, 2));
+    return;
+  }
+  if (req.url === '/endpoints') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderEndpointsHTML());
+    return;
+  }
+  if (req.url === '/agents') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderAgentsHTML());
+    return;
+  }
+  if (req.url === '/api/agents') {
+    const state = getState();
+    const agentData = {
+      workers: state.agents.workers,
+      handoffs: state.agents.handoffs,
+      instances: state.agents.instances,
+      blockers: getDependencies().blockers,
+      timestamp: new Date().toISOString(),
+    };
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(agentData, null, 2));
+    return;
+  }
+  if (req.url === '/deps') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderDepsHTML());
+    return;
+  }
+  if (req.url === '/api/deps') {
+    const deps = getDependencies();
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(deps, null, 2));
+    return;
+  }
   if (req.url === '/api/history') {
     const history = getHistory();
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(history));
+    return;
+  }
+  if (req.url === '/blockers') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderBlockersHTML());
+    return;
+  }
+  if (req.url === '/api/blockers') {
+    const blockers = getBlockers();
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(blockers, null, 2));
     return;
   }
   const state = getState();
@@ -1554,6 +2101,602 @@ const server = http.createServer((req, res) => {
   res.end(renderHTML(state));
 });
 
+// ─── Endpoints Index Page ─────────────────────────────────────────────
+
+function renderEndpointsHTML() {
+  const services = [
+    {
+      name: 'Life Dashboard',
+      port: 3000,
+      status: 'running',
+      description: 'Main system dashboard with metrics, charts, and navigation',
+      endpoints: [
+        { method: 'GET', path: '/', desc: 'Main dashboard with system metrics' },
+        { method: 'GET', path: '/agents', desc: 'Agent collaboration status' },
+        { method: 'GET', path: '/stream', desc: 'Life Stream - 15 data source probes' },
+        { method: 'GET', path: '/threads', desc: 'Active threads from MEMORY.md' },
+        { method: 'GET', path: '/plan', desc: 'Plan execution tracker' },
+        { method: 'GET', path: '/deps', desc: 'Dependency graph (blockers)' },
+        { method: 'GET', path: '/endpoints', desc: 'This page - all endpoints index' },
+        { method: 'GET', path: '/api/state', desc: 'JSON: System state snapshot' },
+        { method: 'GET', path: '/api/stream', desc: 'JSON: Life Stream data' },
+        { method: 'GET', path: '/api/threads', desc: 'JSON: Active threads' },
+        { method: 'GET', path: '/api/agents', desc: 'JSON: Agent collaboration data' },
+        { method: 'GET', path: '/api/plan', desc: 'JSON: Plan execution state' },
+        { method: 'GET', path: '/api/deps', desc: 'JSON: Dependencies and blockers' },
+        { method: 'GET', path: '/api/history', desc: 'JSON: Historical metrics' },
+      ],
+    },
+    {
+      name: 'PracticeLife API',
+      port: 3001,
+      status: 'running',
+      description: 'Local-first personal API - unifies MemoryAtlas, vault, system state',
+      endpoints: [
+        { method: 'GET', path: '/', desc: 'API landing page (HTML)' },
+        { method: 'GET', path: '/health', desc: 'Health check' },
+        { method: 'GET', path: '/api', desc: 'API index with all endpoints' },
+        { method: 'GET', path: '/api/atlas/assets', desc: 'List MemoryAtlas assets (?limit=50&offset=0)' },
+        { method: 'GET', path: '/api/atlas/assets/:id', desc: 'Get single asset by ID' },
+        { method: 'GET', path: '/api/atlas/stats', desc: 'MemoryAtlas statistics' },
+        { method: 'GET', path: '/api/atlas/search/:query', desc: 'Search assets by title' },
+        { method: 'GET', path: '/api/vault/stats', desc: 'Vault note count and path' },
+        { method: 'GET', path: '/api/vault/notes', desc: 'List notes in directory (?dir=Efforts/Active)' },
+        { method: 'GET', path: '/api/vault/note', desc: 'Read a note (?path=Dashboards/Home.md)' },
+        { method: 'GET', path: '/api/vault/structure', desc: 'Top-level vault structure' },
+        { method: 'GET', path: '/api/system/state', desc: 'System metrics (CPU, memory, disk)' },
+        { method: 'GET', path: '/api/system/volumes', desc: 'Mounted volumes' },
+        { method: 'GET', path: '/api/system/ollama', desc: 'Ollama model list' },
+        { method: 'GET', path: '/api/agents/protocol', desc: 'Agent coordination protocol' },
+        { method: 'GET', path: '/api/agents/sessions', desc: 'List Claude session logs' },
+        { method: 'GET', path: '/api/agents/sessions/:name', desc: 'Read specific session log' },
+        { method: 'GET', path: '/api/agents/collab-brief', desc: 'Codex-Claude collaboration brief' },
+        { method: 'GET', path: '/api/ecosystem', desc: 'Complete PracticeLife OS map (?format=json|text)' },
+      ],
+    },
+    {
+      name: 'Prompt Browser',
+      port: 3002,
+      status: 'running',
+      description: 'Browse and search all prompts sent to Claude',
+      endpoints: [
+        { method: 'GET', path: '/', desc: 'Prompt browser UI' },
+        { method: 'GET', path: '/api/stats', desc: 'Prompt statistics (total, sessions, dates)' },
+        { method: 'GET', path: '/api/prompts', desc: 'List prompts (?limit=50&offset=0)' },
+        { method: 'GET', path: '/api/search', desc: 'Search prompts (?q=query)' },
+        { method: 'GET', path: '/api/sessions', desc: 'List sessions' },
+      ],
+    },
+    {
+      name: 'Contact Verification',
+      port: 3003,
+      status: 'running',
+      description: 'Web verification interface for contact updates',
+      endpoints: [
+        { method: 'GET', path: '/', desc: 'Admin panel - generate verification links' },
+        { method: 'GET', path: '/verify/:token', desc: 'Contact verification form' },
+        { method: 'POST', path: '/verify/:token', desc: 'Submit verified contact data' },
+        { method: 'GET', path: '/api/contacts', desc: 'List contacts' },
+      ],
+    },
+  ];
+
+  const serviceCards = services.map(svc => {
+    const statusDot = svc.status === 'running' ? '🟢' : '🔴';
+    const endpointRows = svc.endpoints.map(e => `
+      <tr>
+        <td><span class="method ${e.method.toLowerCase()}">${e.method}</span></td>
+        <td><code class="path">localhost:${svc.port}${e.path}</code></td>
+        <td class="desc">${e.desc}</td>
+      </tr>
+    `).join('');
+
+    return `
+      <div class="service-card">
+        <div class="service-header">
+          <div>
+            <div class="service-name">${statusDot} ${svc.name}</div>
+            <div class="service-desc">${svc.description}</div>
+          </div>
+          <div class="service-port">:${svc.port}</div>
+        </div>
+        <table class="endpoints-table">
+          <thead>
+            <tr>
+              <th style="width:70px">Method</th>
+              <th style="width:350px">Endpoint</th>
+              <th>Description</th>
+            </tr>
+          </thead>
+          <tbody>
+            ${endpointRows}
+          </tbody>
+        </table>
+      </div>
+    `;
+  }).join('');
+
+  const totalEndpoints = services.reduce((sum, s) => sum + s.endpoints.length, 0);
+
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>API Endpoints • PracticeLife</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+  background: #0a0e14;
+  color: #c7cdd8;
+  padding: 20px;
+  line-height: 1.6;
+}
+.container { max-width: 1400px; margin: 0 auto; }
+h1 {
+  color: #00ff88;
+  margin-bottom: 10px;
+  font-size: 28px;
+  font-weight: 600;
+}
+.subtitle {
+  color: #7d8590;
+  margin-bottom: 30px;
+  font-size: 14px;
+}
+.stats {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 30px;
+}
+.stat {
+  background: #151920;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  padding: 15px 20px;
+}
+.stat-value {
+  color: #00ff88;
+  font-size: 32px;
+  font-weight: 600;
+}
+.stat-label {
+  color: #7d8590;
+  font-size: 12px;
+  margin-top: 5px;
+}
+.service-card {
+  background: #151920;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  margin-bottom: 25px;
+  overflow: hidden;
+}
+.service-header {
+  padding: 20px;
+  border-bottom: 1px solid #1f2937;
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+}
+.service-name {
+  color: #fff;
+  font-size: 18px;
+  font-weight: 600;
+  margin-bottom: 5px;
+}
+.service-desc {
+  color: #7d8590;
+  font-size: 13px;
+}
+.service-port {
+  color: #00aaff;
+  font-size: 24px;
+  font-weight: 600;
+}
+.endpoints-table {
+  width: 100%;
+  border-collapse: collapse;
+}
+.endpoints-table th {
+  background: #0d1117;
+  color: #7d8590;
+  padding: 12px 20px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+}
+.endpoints-table td {
+  padding: 12px 20px;
+  border-top: 1px solid #1f2937;
+  font-size: 13px;
+}
+.method {
+  display: inline-block;
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 11px;
+  font-weight: 600;
+}
+.method.get {
+  background: rgba(0, 170, 255, 0.1);
+  color: #00aaff;
+}
+.method.post {
+  background: rgba(0, 255, 136, 0.1);
+  color: #00ff88;
+}
+.path {
+  color: #c7cdd8;
+  background: #0d1117;
+  padding: 4px 8px;
+  border-radius: 4px;
+  font-size: 12px;
+}
+.desc {
+  color: #7d8590;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  ${renderNav('endpoints')}
+
+  <h1>API Endpoints</h1>
+  <div class="subtitle">Complete catalog of all localhost services and their endpoints</div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value">${services.length}</div>
+      <div class="stat-label">Services Running</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">${totalEndpoints}</div>
+      <div class="stat-label">Total Endpoints</div>
+    </div>
+  </div>
+
+  ${serviceCards}
+
+</div>
+</body></html>`;
+}
+
+// ─── Agent Collaboration Page ─────────────────────────────────────────
+
+function renderAgentsHTML() {
+  const state = getState();
+  const workers = state.agents.workers || [];
+  const handoffs = state.agents.handoffs || [];
+  const instances = state.agents.instances || [];
+  const blockers = getDependencies().blockers || [];
+
+  // Active agents
+  const activeWorkers = workers.filter(w => w.status === 'Active');
+  const parkedWorkers = workers.filter(w => w.status === 'Parked');
+
+  const workerCards = activeWorkers.map(w => {
+    const statusDot = w.status === 'Active' ? '🟢' : '🟡';
+    const latestSession = instances.find(i => i.name.includes(w.name));
+    const activity = latestSession ? latestSession.focus : w.focus;
+    const pending = latestSession ? latestSession.pending.slice(0, 3) : [];
+
+    return `
+      <div class="agent-card active">
+        <div class="agent-header">
+          <div class="agent-name">${statusDot} ${w.name}</div>
+          <div class="agent-meta">${w.model} • ${w.interface}</div>
+        </div>
+        <div class="agent-focus">${activity}</div>
+        ${pending.length > 0 ? `
+          <div class="agent-pending">
+            ${pending.map(p => `<div class="pending-item">→ ${p}</div>`).join('')}
+          </div>
+        ` : ''}
+      </div>
+    `;
+  }).join('');
+
+  const parkedCards = parkedWorkers.map(w => `
+    <div class="agent-card parked">
+      <div class="agent-header">
+        <div class="agent-name">💤 ${w.name}</div>
+        <div class="agent-meta">${w.model}</div>
+      </div>
+      <div class="agent-focus">${w.focus}</div>
+    </div>
+  `).join('');
+
+  // Blockers
+  const blockerRows = blockers.map(b => {
+    const unblocksList = b.unblocks.length > 0
+      ? `<div class="unblocks">Unblocks: ${b.unblocks.slice(0, 3).join(', ')}</div>`
+      : '';
+    return `
+      <tr>
+        <td><strong>${b.item}</strong></td>
+        <td>${b.blocker}${unblocksList}</td>
+      </tr>
+    `;
+  }).join('');
+
+  // Recent handoffs
+  const handoffCards = handoffs.map(h => `
+    <div class="handoff-card">
+      <div class="handoff-header">
+        <div class="handoff-agent">${h.agent}</div>
+        <div class="handoff-time">${h.timestamp}</div>
+      </div>
+      <div class="handoff-title">${h.title}</div>
+      ${h.blocker ? `<div class="handoff-blocker">🚫 ${h.blocker}</div>` : ''}
+      ${h.nextSteps.length > 0 ? `
+        <div class="handoff-next">
+          ${h.nextSteps.map(s => `<div>→ ${s}</div>`).join('')}
+        </div>
+      ` : ''}
+    </div>
+  `).join('');
+
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<meta http-equiv="refresh" content="60">
+<title>Agent Collaboration • PracticeLife</title>
+<style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body {
+  font-family: 'SF Mono', 'Monaco', 'Inconsolata', 'Fira Code', monospace;
+  background: #0a0e14;
+  color: #c7cdd8;
+  padding: 20px;
+  line-height: 1.6;
+}
+.container { max-width: 1400px; margin: 0 auto; }
+h1 {
+  color: #00ff88;
+  margin-bottom: 10px;
+  font-size: 28px;
+  font-weight: 600;
+}
+.subtitle {
+  color: #7d8590;
+  margin-bottom: 30px;
+  font-size: 14px;
+}
+nav {
+  margin-bottom: 30px;
+  padding-bottom: 20px;
+  border-bottom: 1px solid #1f2937;
+}
+nav a {
+  color: #7d8590;
+  text-decoration: none;
+  margin-right: 20px;
+  font-size: 14px;
+}
+nav a:hover { color: #00ff88; }
+.section {
+  margin-bottom: 40px;
+}
+.section-title {
+  color: #00aaff;
+  font-size: 18px;
+  margin-bottom: 15px;
+  font-weight: 600;
+}
+.agent-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: 15px;
+  margin-bottom: 20px;
+}
+.agent-card {
+  background: #151920;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  padding: 15px;
+}
+.agent-card.active {
+  border-left: 3px solid #00ff88;
+}
+.agent-card.parked {
+  border-left: 3px solid #ffa500;
+  opacity: 0.7;
+}
+.agent-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: start;
+  margin-bottom: 10px;
+}
+.agent-name {
+  color: #fff;
+  font-size: 16px;
+  font-weight: 600;
+}
+.agent-meta {
+  color: #7d8590;
+  font-size: 12px;
+  text-align: right;
+}
+.agent-focus {
+  color: #c7cdd8;
+  font-size: 13px;
+  margin-bottom: 10px;
+  font-style: italic;
+}
+.agent-pending {
+  margin-top: 10px;
+  padding-top: 10px;
+  border-top: 1px solid #1f2937;
+}
+.pending-item {
+  color: #00aaff;
+  font-size: 12px;
+  padding: 3px 0;
+}
+table {
+  width: 100%;
+  border-collapse: collapse;
+  background: #151920;
+  border-radius: 8px;
+  overflow: hidden;
+}
+th {
+  background: #1f2937;
+  color: #00ff88;
+  padding: 12px;
+  text-align: left;
+  font-weight: 600;
+  font-size: 13px;
+}
+td {
+  padding: 12px;
+  border-top: 1px solid #1f2937;
+  font-size: 13px;
+}
+.unblocks {
+  color: #7d8590;
+  font-size: 11px;
+  margin-top: 5px;
+}
+.handoff-card {
+  background: #151920;
+  border: 1px solid #1f2937;
+  border-left: 3px solid #ffa500;
+  border-radius: 8px;
+  padding: 15px;
+  margin-bottom: 15px;
+}
+.handoff-header {
+  display: flex;
+  justify-content: space-between;
+  margin-bottom: 8px;
+}
+.handoff-agent {
+  color: #fff;
+  font-weight: 600;
+  font-size: 14px;
+}
+.handoff-time {
+  color: #7d8590;
+  font-size: 12px;
+}
+.handoff-title {
+  color: #c7cdd8;
+  font-size: 13px;
+  margin-bottom: 8px;
+}
+.handoff-blocker {
+  color: #ff5555;
+  font-size: 12px;
+  margin-top: 8px;
+  padding: 5px 8px;
+  background: rgba(255, 85, 85, 0.1);
+  border-radius: 4px;
+}
+.handoff-next {
+  margin-top: 8px;
+  padding-top: 8px;
+  border-top: 1px solid #1f2937;
+  font-size: 12px;
+  color: #00aaff;
+}
+.stats {
+  display: flex;
+  gap: 20px;
+  margin-bottom: 20px;
+}
+.stat {
+  background: #151920;
+  border: 1px solid #1f2937;
+  border-radius: 8px;
+  padding: 15px 20px;
+  flex: 1;
+}
+.stat-value {
+  color: #00ff88;
+  font-size: 32px;
+  font-weight: 600;
+}
+.stat-label {
+  color: #7d8590;
+  font-size: 12px;
+  margin-top: 5px;
+}
+</style>
+</head>
+<body>
+<div class="container">
+  ${renderNav('agents')}
+
+  <h1>Agent Collaboration</h1>
+  <div class="subtitle">Real-time multi-agent coordination status</div>
+
+  <div class="stats">
+    <div class="stat">
+      <div class="stat-value">${activeWorkers.length}</div>
+      <div class="stat-label">Active Agents</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">${parkedWorkers.length}</div>
+      <div class="stat-label">Parked</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">${blockers.length}</div>
+      <div class="stat-label">Blockers</div>
+    </div>
+    <div class="stat">
+      <div class="stat-value">${handoffs.length}</div>
+      <div class="stat-label">Recent Handoffs</div>
+    </div>
+  </div>
+
+  <div class="section">
+    <div class="section-title">🟢 Active Agents (${activeWorkers.length})</div>
+    ${activeWorkers.length > 0 ? `
+      <div class="agent-grid">${workerCards}</div>
+    ` : '<p style="color:#7d8590">No active agents</p>'}
+  </div>
+
+  ${parkedWorkers.length > 0 ? `
+    <div class="section">
+      <div class="section-title">💤 Parked Agents (${parkedWorkers.length})</div>
+      <div class="agent-grid">${parkedCards}</div>
+    </div>
+  ` : ''}
+
+  ${blockers.length > 0 ? `
+    <div class="section">
+      <div class="section-title">🚫 Blockers (${blockers.length})</div>
+      <table>
+        <thead>
+          <tr>
+            <th>Item</th>
+            <th>Blocker</th>
+          </tr>
+        </thead>
+        <tbody>
+          ${blockerRows}
+        </tbody>
+      </table>
+    </div>
+  ` : ''}
+
+  ${handoffs.length > 0 ? `
+    <div class="section">
+      <div class="section-title">📋 Recent Handoffs (${handoffs.length})</div>
+      ${handoffCards}
+    </div>
+  ` : ''}
+
+</div>
+</body></html>`;
+}
+
 server.listen(PORT, () => {
   console.log(`\n  Ω₀ PracticeLife Dashboard`);
   console.log(`  ========================`);
@@ -1561,3 +2704,136 @@ server.listen(PORT, () => {
   console.log(`  API: http://localhost:${PORT}/api/state`);
   console.log(`  History: http://localhost:${PORT}/api/history\n`);
 });
+
+// ─── Dependencies page ───────────────────────────────────────────────
+
+function renderDepsHTML() {
+  const data = getDependencies();
+
+  // Current work section
+  const workHTML = data.currentWork.map(w => {
+    const actions = w.recentActions.slice(0, 5).map(a =>
+      `<div class="action">→ ${a.replace(/^\*\*[^*]+\*\*\s*[—–-]+\s*/, '')}</div>`
+    ).join('');
+    return `<div class="work-card">
+  <div class="work-header">
+    <span class="work-agent">${w.agent}</span>
+    <span class="work-session">${w.session}</span>
+  </div>
+  <div class="work-focus">${w.focus}</div>
+  <div class="work-recent">${actions || '<div class="action-empty">Starting up...</div>'}</div>
+</div>`;
+  }).join('');
+
+  // Blockers section
+  const blockersHTML = data.blockers.map(b => {
+    const unblocksList = b.unblocks.length > 0
+      ? b.unblocks.map(u => `<li>${u}</li>`).join('')
+      : '<li class="empty">No downstream dependencies identified</li>';
+    const count = b.unblocks.length;
+    const countColor = count === 0 ? '#555' : count < 2 ? '#ffaa00' : '#ff4444';
+    return `<div class="blocker-card">
+  <div class="blocker-header">
+    <span class="blocker-item">${b.item}</span>
+    <span class="blocker-count" style="color:${countColor}">${count} blocked</span>
+  </div>
+  <div class="blocker-desc">${b.blocker}</div>
+  <div class="blocker-unblocks">
+    <div class="unblocks-label">This blocks:</div>
+    <ul class="unblocks-list">${unblocksList}</ul>
+  </div>
+</div>`;
+  }).join('');
+
+  const blockerCount = data.blockers.length;
+  const totalBlocked = data.blockers.reduce((sum, b) => sum + b.unblocks.length, 0);
+
+  return `<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<title>Ω₀ Dependencies</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
+h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
+.subtitle { color:#666; margin-bottom:20px; font-size:13px; }
+.nav { display:flex; gap:16px; margin-bottom:20px; }
+.nav a { color:#555; font-size:13px; padding:4px 12px; border:1px solid #222; border-radius:6px; text-decoration:none; }
+.nav a:hover, .nav a.active { color:#00ff88; border-color:#00ff88; }
+
+.summary { display:flex; gap:16px; margin-bottom:24px; }
+.scard { background:#151515; border:1px solid #222; border-radius:8px; padding:12px 20px; text-align:center; }
+.scard .num { font-size:32px; font-weight:bold; }
+.scard .label { color:#555; font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-top:4px; }
+.num.blocker { color:#ff4444; }
+.num.blocked { color:#ffaa00; }
+
+.section { margin-bottom:32px; }
+.section-title { color:#00aaff; font-size:14px; text-transform:uppercase; letter-spacing:1px; margin-bottom:12px; padding-bottom:6px; border-bottom:1px solid #222; }
+
+.work-card { background:#111; border-left:3px solid #00ff88; border-radius:8px; padding:16px; margin-bottom:12px; }
+.work-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.work-agent { font-size:16px; font-weight:bold; color:#00ff88; }
+.work-session { font-size:11px; color:#444; font-family:monospace; }
+.work-focus { color:#999; font-size:13px; margin-bottom:12px; }
+.work-recent { margin-top:12px; padding-top:12px; border-top:1px solid #1a1a1a; }
+.action { color:#666; font-size:12px; padding:4px 0; line-height:1.4; }
+.action-empty { color:#444; font-style:italic; }
+
+.blocker-card { background:#111; border-left:3px solid #ff4444; border-radius:8px; padding:16px; margin-bottom:12px; }
+.blocker-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
+.blocker-item { font-size:15px; font-weight:bold; color:#ff4444; }
+.blocker-count { font-size:11px; font-weight:bold; padding:2px 8px; background:#1a1a1a; border-radius:4px; }
+.blocker-desc { color:#999; font-size:12px; margin-bottom:12px; }
+.blocker-unblocks { margin-top:12px; padding-top:12px; border-top:1px solid #1a1a1a; }
+.unblocks-label { color:#555; font-size:11px; text-transform:uppercase; letter-spacing:0.5px; margin-bottom:6px; }
+.unblocks-list { list-style:none; }
+.unblocks-list li { color:#ffaa00; font-size:12px; padding:4px 0; padding-left:12px; position:relative; }
+.unblocks-list li:before { content:'▸'; position:absolute; left:0; color:#ff4444; }
+.unblocks-list li.empty { color:#444; font-style:italic; }
+.unblocks-list li.empty:before { content:''; }
+
+.timestamp { color:#333; font-size:11px; text-align:right; margin-top:24px; }
+</style>
+</head><body>
+${renderNav('deps')}
+
+<h1>Ω₀ Dependencies</h1>
+<div class="subtitle">Real-time blocker tracking — What needs you, what it holds up — Auto-refresh 10s</div>
+
+<div class="summary">
+  <div class="scard">
+    <div class="num blocker">${blockerCount}</div>
+    <div class="label">Human Actions Needed</div>
+  </div>
+  <div class="scard">
+    <div class="num blocked">${totalBlocked}</div>
+    <div class="label">Threads Blocked</div>
+  </div>
+</div>
+
+<div class="section">
+  <div class="section-title">🤖 What Claude is Working On</div>
+  ${workHTML || '<div style="color:#444;padding:12px;font-style:italic">No active work detected</div>'}
+</div>
+
+<div class="section">
+  <div class="section-title">⏸️ Blocked on Peretz</div>
+  ${blockersHTML || '<div style="color:#444;padding:12px;font-style:italic">Nothing blocked! 🎉</div>'}
+</div>
+
+<div class="timestamp">Updated ${new Date().toLocaleString()} · Sources: Home.md + session logs + MEMORY.md</div>
+
+<script>
+setInterval(async()=>{
+  try{
+    const r=await fetch('/deps');
+    const h=await r.text();
+    document.open();
+    document.write(h);
+    document.close();
+  }catch{}
+}, 10000);
+</script>
+
+</body></html>`;
+}

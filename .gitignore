@@ -11,3 +11,8 @@ auth.json
 credentials.*
 *.err
 *.log
+
+# Logs
+*.log
+*.err
+*.backup-*
