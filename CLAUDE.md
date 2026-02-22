@@ -13,7 +13,10 @@ npm run dev     # Start with file watching (node --watch server.js)
 npm start       # Start without watching
 ```
 
-Dashboard runs at `http://localhost:3000`, JSON API at `http://localhost:3000/api/state`.
+**Dashboard runs at `https://localhost:3000` (HTTPS only with self-signed cert).**
+- JSON API: `https://localhost:3000/api/state`
+- History: `https://localhost:3000/api/history`
+- Use `curl -k` for testing (ignores certificate warnings)
 
 ## Architecture
 

@@ -371,6 +371,7 @@ const TASKS = [
   { id: 36, name: 'Prompt Browser App', status: 'done', icon: '✅', detail: 'port 3002, browse/search/sessions/stats' },
   { id: 41, name: 'Contact Verification Web App', status: 'running', icon: '🔄', detail: 'Privacy-first verification interface on port 3003. Deploy to verify.peretzpartensky.com pending.' },
   { id: 42, name: 'Self-Organizing Downloads', status: 'running', icon: '🔄', detail: 'LaunchAgent daemon monitoring ~/Downloads/ with 14 routing rules via fswatch. Auto-routes by type+context.' },
+  { id: 43, name: 'Tailscale VPN', status: 'running', icon: '🔄', detail: 'Mac Studio connected (100.119.7.102). Next: Install app on iPhone/iPad, enable subnet routes in admin console.' },
   { id: 37, name: 'Terminal Spruce-up', status: 'done', icon: '✅', detail: 'Starship, MOTD, fzf themed, LaunchAgent' },
   { id: 1, name: 'Terminal Power Config', status: 'done', icon: '✅' },
   { id: 2, name: 'GitHub Dual-Account Setup', status: 'done', icon: '✅' },
@@ -590,6 +591,52 @@ ${renderNav('dashboard')}
   </div>
 </div>
 
+<div id="spend-details" style="display:none; background:#0d1117; border:1px solid #30363d; border-radius:8px; padding:20px; margin:20px 0;">
+  <h2 style="color:#ff4444; margin-bottom:16px;">💳 Real Bills You Actually Pay</h2>
+  <div style="background:#1a1a2e; padding:16px; border-radius:6px; margin-bottom:16px; border-left:4px solid #ff4444;">
+    <table style="width:100%; font-size:14px;">
+      <tr><td><strong>Cursor Pro</strong></td><td style="text-align:right; color:#ff4444;"><strong>$20.00/mo</strong></td></tr>
+      <tr><td style="padding-left:16px; color:#888; font-size:12px;">Unlimited tab completions + agent mode</td><td></td></tr>
+      <tr style="height:12px;"><td colspan="2"></td></tr>
+      <tr><td><strong>Claude Code / Anthropic API</strong></td><td style="text-align:right; color:#888;">Check console ⤵</td></tr>
+      <tr><td colspan="2" style="padding-top:4px; font-size:12px; color:#888;">
+        → <a href="https://console.anthropic.com/settings/billing" target="_blank" style="color:#00ff88;">console.anthropic.com/settings/billing</a><br>
+        <span style="color:#666;">Depends on: Claude Pro subscription ($20/mo unlimited) vs API credits (pay-per-token)</span>
+      </td></tr>
+      <tr style="height:12px;"><td colspan="2"></td></tr>
+      <tr style="border-top:1px solid #333;"><td><strong>Total Known</strong></td><td style="text-align:right; color:#ff4444;"><strong>$20-40/mo</strong></td></tr>
+      <tr><td colspan="2" style="font-size:11px; color:#666; padding-top:4px;">Cursor confirmed · Claude depends on plan</td></tr>
+    </table>
+  </div>
+
+  <h2 style="color:#888; margin:24px 0 16px 0;">📊 Token Metrics (Theoretical - Not Billed)</h2>
+  <div style="background:#151515; padding:16px; border-radius:6px; margin-bottom:16px; border-left:4px solid #888;">
+    <p style="margin-bottom:8px; color:#888;"><strong>What this is:</strong> Efficiency tracking based on token counts × published pricing.</p>
+    <p style="font-size:13px; color:#666;">These numbers are NOT bills. They show what it WOULD cost if paying per-token, useful for tracking cache efficiency.</p>
+  </div>
+  <table style="width:100%; font-size:13px; color:#888;">
+    <tr><td><strong style="color:#ccc;">Theoretical Cost (if paying per-token):</strong></td><td style="text-align:right; color:#888;">\$${state.wallet.cost ? state.wallet.cost.total.toFixed(2) : '0.00'}</td></tr>
+    <tr><td style="padding-left:16px;">Input tokens</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.input.toFixed(2) : '0.00'}</td></tr>
+    <tr><td style="padding-left:16px;">Output tokens</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.output.toFixed(2) : '0.00'}</td></tr>
+    <tr><td style="padding-left:16px;">Cache create</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.cache_create.toFixed(2) : '0.00'}</td></tr>
+    <tr><td style="padding-left:16px;">Cache read</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.cache_read.toFixed(2) : '0.00'}</td></tr>
+    <tr style="border-top:1px solid #333;"><td><strong style="color:#00ff88;">Cache Efficiency Gain:</strong></td><td style="text-align:right; color:#00ff88;"><strong>\$${state.wallet.saved_by_cache ? state.wallet.saved_by_cache.toFixed(2) : '0.00'}</strong></td></tr>
+    <tr><td colspan="2" style="font-size:12px; color:#666; padding-top:8px;">Without caching: \$${state.wallet.cost && state.wallet.saved_by_cache ? (state.wallet.cost.total + state.wallet.saved_by_cache).toFixed(2) : '0.00'} · <strong style="color:#00ff88;">${state.wallet.cost && state.wallet.saved_by_cache ? ((state.wallet.saved_by_cache / (state.wallet.cost.total + state.wallet.saved_by_cache)) * 100).toFixed(1) : '0'}% efficient</strong></td></tr>
+  </table>
+  <details style="margin-top:20px;">
+    <summary style="cursor:pointer; color:#00ccff; font-weight:bold;">📊 View ${state.wallet.sessions || 0} Sessions (click to expand)</summary>
+    <div style="max-height:400px; overflow-y:auto; margin-top:12px; background:#0a0a0a; padding:12px; border-radius:4px; font-family:monospace; font-size:11px;">
+      ${state.wallet.by_session ? state.wallet.by_session.map(s => {
+        const color = s.model.includes('opus') ? '#ffaa00' : s.model.includes('sonnet') ? '#00ccff' : '#00ff88';
+        return `<div style="margin-bottom:8px; padding:8px; background:#151515; border-left:3px solid ${color}; border-radius:3px;">
+          <strong>${s.session_id}</strong> · ${s.model}<br>
+          <span style="color:#888;">In: ${(s.input/1000).toFixed(0)}K | Out: ${(s.output/1000).toFixed(0)}K | Cache: ${(s.cache_read/1e6).toFixed(1)}M | Total: ${(s.total/1e6).toFixed(1)}M</span>
+        </div>`;
+      }).join('') : 'No session data'}
+    </div>
+  </details>
+</div>
+
 <div id="chart-panel" class="chart-panel"></div>
 
 <div class="progress-bar"><div class="progress-fill" id="progress-fill" style="width:${pct}%">${pct}% ALIGNED</div></div>
@@ -602,10 +649,15 @@ ${renderNav('dashboard')}
       <div class="value" id="v-tokens">${state.wallet.total_tokens ? (state.wallet.total_tokens / 1e6).toFixed(1) + 'M' : '—'}</div>
       <div class="sub">${state.wallet.input_tokens ? (state.wallet.input_tokens / 1e3).toFixed(0) + 'K in / ' + (state.wallet.output_tokens / 1e3).toFixed(0) + 'K out' : 'across all sessions'}</div>
     </div>
-    <div class="card clickable" style="border-color:#ffaa0033" data-metric="cost" data-label="Cloud Spend">
-      <h3>Cloud Spend</h3>
-      <div class="value warn" id="v-cost">$${state.wallet.cost ? state.wallet.cost.total.toFixed(0) : '—'}</div>
-      <div class="sub">Opus API · ${state.wallet.sessions || 0} sessions</div>
+    <div class="card clickable" style="border-color:#ff4444aa" data-metric="real-bills" data-label="Real Bills" onclick="document.getElementById('spend-details').style.display = document.getElementById('spend-details').style.display === 'none' ? 'block' : 'none'">
+      <h3>💳 Real Bills <span style="font-size:14px">▼</span></h3>
+      <div class="value" style="color:#ff4444" id="v-real-cost">$20</div>
+      <div class="sub">Cursor Pro/mo · click to expand</div>
+    </div>
+    <div class="card clickable" style="border-color:#88888833" data-metric="token-metrics" data-label="Token Metrics">
+      <h3>Token Metrics</h3>
+      <div class="value" style="color:#888" id="v-theoretical">$${state.wallet.cost ? state.wallet.cost.total.toFixed(0) : '—'}</div>
+      <div class="sub">theoretical · tracking only</div>
     </div>
     <div class="card clickable" style="border-color:#00aaff33" data-metric="cache" data-label="Cache Savings">
       <h3>Cache Savings</h3>
@@ -1816,21 +1868,13 @@ function getBlockers() {
         'First backup will start automatically (may take several hours)',
       ],
     },
-    {
-      item: 'LinkedIn MCP Manual Login',
-      blocker: 'Need to log into LinkedIn via Claude Desktop browser once',
-      impact: 7,
-      unlocks: ['Contact Dedup enrichment (716 T1 people)', 'LinkedIn profile data mining', 'Professional network mapping', 'Automated connection tracking'],
-      instructions: [
-        'Open Claude Desktop app',
-        'LinkedIn MCP server is already configured',
-        'Trigger any LinkedIn tool (search, profile lookup)',
-        'Playwright browser will open',
-        'Log into LinkedIn manually',
-        'Session will be saved to ~/.linkedin-mcp-profile/',
-        'Close browser when done',
-      ],
-    },
+    // ✅ COMPLETED 2026-02-20: LinkedIn MCP authenticated, session saved to ~/.linkedin-mcp-profile/
+    // {
+    //   item: 'LinkedIn MCP Manual Login',
+    //   blocker: 'Need to log into LinkedIn via Claude Desktop browser once',
+    //   impact: 7,
+    //   unlocks: ['Contact Dedup enrichment (716 T1 people)', 'LinkedIn profile data mining', 'Professional network mapping', 'Automated connection tracking'],
+    // },
     {
       item: 'Google Takeout (Location History)',
       blocker: 'Need to request Location History export from Google',
