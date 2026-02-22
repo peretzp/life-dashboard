@@ -2140,6 +2140,28 @@ const server = https.createServer(sslOptions, (req, res) => {
     }
     return;
   }
+  if (req.url === '/tasks') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderTasksHTML());
+    return;
+  }
+  if (req.url === '/api/tasks') {
+    try {
+      const prompts = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.claude/suggested-prompts.json'), 'utf8'));
+      const tasks = {
+        ready: prompts.prompts.filter(p => p.status === 'ready'),
+        in_progress: prompts.prompts.filter(p => p.status === 'in_progress'),
+        complete: prompts.prompts.filter(p => p.status === 'complete'),
+        blocked: prompts.prompts.filter(p => p.status === 'blocked')
+      };
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify(tasks, null, 2));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
   if (req.url.startsWith('/search')) {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     const query = decodeURIComponent(req.url.split('?q=')[1] || '');
@@ -3159,4 +3181,21 @@ setInterval(async()=>{
 </script>
 
 </body></html>`;
+}
+
+// ─── Tasks Page ───────────────────────────────────────────────────────
+function renderTasksHTML() {
+  try {
+    const prompts = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.claude/suggested-prompts.json'), 'utf8'));
+    const byStatus = {
+      ready: prompts.prompts.filter(p => p.status === 'ready'),
+      in_progress: prompts.prompts.filter(p => p.status === 'in_progress'),
+      complete: prompts.prompts.filter(p => p.status === 'complete'),
+      blocked: prompts.prompts.filter(p => p.status === 'blocked'),
+      partial: prompts.prompts.filter(p => p.status === 'partial')
+    };
+    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tasks | Ω₀</title><style>* { margin:0; padding:0; box-sizing:border-box; } body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; } .container { max-width:1200px; margin:0 auto; } h1 { color:#00ff88; font-size:28px; margin-bottom:20px; } .status-section { margin-bottom:40px; } .status-header { color:#00aaff; font-size:20px; margin-bottom:12px; } .task-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(350px,1fr)); gap:16px; } .task-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #00ff88; border-radius:8px; padding:16px; } .task-card.in_progress { border-left-color:#00aaff; } .task-card.blocked { border-left-color:#ff4444; } .task-card.partial { border-left-color:#ffaa00; } .task-card.ready { border-left-color:#00ff88; } .task-title { color:#fff; font-size:14px; font-weight:600; margin-bottom:8px; } .task-meta { color:#666; font-size:11px; margin-bottom:4px; } .task-agent { color:#00aaff; font-size:12px; } .task-notes { background:#1a1a1a; padding:8px; margin-top:8px; font-size:11px; color:#999; border-radius:4px; }</style></head><body><div class="container">${renderNav('/tasks')}<h1>🎯 Task Delegation</h1><div class="status-section"><div class="status-header">📋 Ready (${byStatus.ready.length})</div><div class="task-grid">${byStatus.ready.map(t => `<div class="task-card ready"><div class="task-title">${t.title}</div><div class="task-meta">${t.category} · ${t.estimated_cost} · ${t.estimated_time}</div></div>`).join('')}</div></div><div class="status-section"><div class="status-header">🔄 In Progress (${byStatus.in_progress.length})</div><div class="task-grid">${byStatus.in_progress.map(t => `<div class="task-card in_progress"><div class="task-title">${t.title}</div><div class="task-meta">${t.category}</div>${t.completed_by ? `<div class="task-agent">Agent: ${t.completed_by}</div>` : ''}</div>`).join('')}</div></div><div class="status-section"><div class="status-header">✅ Complete (${byStatus.complete.length})</div><div class="task-grid">${byStatus.complete.slice(0, 6).map(t => `<div class="task-card complete" style="opacity:0.6"><div class="task-title">${t.title}</div>${t.completed_by ? `<div class="task-agent">${t.completed_by}</div>` : ''}${t.notes ? `<div class="task-notes">${t.notes.substring(0, 100)}...</div>` : ''}</div>`).join('')}</div></div>${byStatus.blocked.length > 0 ? `<div class="status-section"><div class="status-header">🚧 Blocked (${byStatus.blocked.length})</div><div class="task-grid">${byStatus.blocked.map(t => `<div class="task-card blocked"><div class="task-title">${t.title}</div>${t.notes ? `<div class="task-notes">${t.notes}</div>` : ''}</div>`).join('')}</div></div>` : ''}</div></body></html>`;
+  } catch (e) {
+    return `<!DOCTYPE html><html><body><h1>Error loading tasks</h1><pre>${e.message}</pre></body></html>`;
+  }
 }
