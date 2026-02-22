@@ -2225,22 +2225,36 @@ function renderPromptsHTML() {
   }
 
   const categoryHTML = Object.entries(categories).map(([cat, prompts]) => {
-    const cards = prompts.map(p => `
-      <div class="prompt-card" data-id="${p.id}">
+    const cards = prompts.map(p => {
+      const statusBadge = p.status === 'complete'
+        ? `<div class="status-badge complete">✓ Complete${p.completed_by ? ` by ${p.completed_by}` : ''}</div>`
+        : p.status === 'in_progress'
+        ? `<div class="status-badge progress">🔄 In Progress${p.completed_by ? ` by ${p.completed_by}` : ''}</div>`
+        : p.status === 'partial'
+        ? `<div class="status-badge partial">⚠️ Partial</div>`
+        : `<div class="status-badge ready">📋 Ready to Execute</div>`;
+
+      const notes = p.notes ? `<div class="prompt-notes">📝 ${p.notes}</div>` : '';
+
+      return `
+      <div class="prompt-card ${p.status}" data-id="${p.id}">
         <div class="prompt-header">
           <div class="prompt-title">${p.title}</div>
           <div class="prompt-id">#${p.id}</div>
         </div>
-        <div class="prompt-template">${p.template.replace(/\[([^\]]+)\]/g, '<span class="var">[$1]</span>')}</div>
+        ${statusBadge}
+        <div class="prompt-template">${p.template}</div>
         <div class="prompt-meta">
           <span class="meta-item">⏱ ${p.estimated_time}</span>
           <span class="meta-item">💰 ${p.estimated_cost}</span>
         </div>
         <div class="prompt-outcome">→ ${p.expected_outcome}</div>
+        ${notes}
         <div class="prompt-tags">${p.tags.map(t => `<span class="tag">${t}</span>`).join('')}</div>
-        <button class="copy-btn" onclick="copyPrompt('${p.id}')">Copy Template</button>
+        ${p.status !== 'complete' ? `<button class="copy-btn" onclick="copyPrompt('${p.id}')">Copy Template</button>` : ''}
       </div>
-    `).join('');
+    `;
+    }).join('');
 
     return `
       <div class="category-section">
@@ -2265,6 +2279,15 @@ h1 { color:#00ff88; font-size:28px; margin-bottom:8px; }
 .prompt-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); gap:16px; }
 .prompt-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #00ff88; border-radius:8px; padding:16px; transition:border-color .2s,box-shadow .2s; }
 .prompt-card:hover { border-left-color:#00aaff; box-shadow:0 0 20px rgba(0,255,136,.08); }
+.prompt-card.complete { border-left-color:#00ff88; opacity:0.7; }
+.prompt-card.in_progress { border-left-color:#00aaff; }
+.prompt-card.partial { border-left-color:#ffaa00; }
+.status-badge { font-size:11px; font-weight:600; padding:4px 10px; border-radius:4px; margin-bottom:10px; display:inline-block; }
+.status-badge.complete { background:#00ff8822; color:#00ff88; border:1px solid #00ff8844; }
+.status-badge.progress { background:#00aaff22; color:#00aaff; border:1px solid #00aaff44; }
+.status-badge.partial { background:#ffaa0022; color:#ffaa00; border:1px solid #ffaa0044; }
+.status-badge.ready { background:#55555522; color:#888; border:1px solid #55555544; }
+.prompt-notes { background:#1a1a1a; border-left:2px solid #00aaff; padding:8px 12px; margin:8px 0; font-size:12px; color:#999; border-radius:4px; }
 .prompt-header { display:flex; justify-content:space-between; align-items:start; margin-bottom:12px; }
 .prompt-title { color:#fff; font-size:15px; font-weight:600; flex:1; }
 .prompt-id { color:#444; font-size:11px; font-weight:600; background:#1a1a1a; padding:2px 8px; border-radius:4px; }

@@ -26,3 +26,5 @@ credentials.*
 *.jsonl
 *.backup
 *.http-backup
+*.log
+*.err
