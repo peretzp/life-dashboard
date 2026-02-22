@@ -16,3 +16,8 @@ credentials.*
 *.log
 *.err
 *.backup-*
+
+# SSL certificates (never commit private keys)
+*.key
+*.crt
+*.pem

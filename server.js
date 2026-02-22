@@ -1,4 +1,5 @@
 const http = require('http');
+const https = require('https');
 const fs = require('fs');
 const path = require('path');
 const { execSync } = require('child_process');
@@ -8,9 +9,22 @@ const VAULT = path.join(process.env.HOME, 'Library/Mobile Documents/iCloud~md~ob
 const HISTORY_FILE = path.join(__dirname, 'history.jsonl');
 const HISTORY_MAX = 2880; // 48 hours at 1 snapshot/minute
 
-function run(cmd, timeout = 5000) {
-  try { return execSync(cmd, { timeout, encoding: 'utf8' }).trim(); }
-  catch { return '—'; }
+// Cache for expensive shell commands (reduces CPU/disk thrashing)
+const cmdCache = new Map();
+const CACHE_TTL = 30000; // 30 seconds
+
+function run(cmd, timeout = 5000, cached = true) {
+  if (cached && cmdCache.has(cmd)) {
+    const { value, timestamp } = cmdCache.get(cmd);
+    if (Date.now() - timestamp < CACHE_TTL) {
+      return value;
+    }
+  }
+  try {
+    const value = execSync(cmd, { timeout, encoding: 'utf8' }).trim();
+    if (cached) cmdCache.set(cmd, { value, timestamp: Date.now() });
+    return value;
+  } catch { return '—'; }
 }
 
 function getState() {
@@ -43,9 +57,9 @@ function getState() {
 
   const protocolPath = path.join(process.env.HOME, 'agent-protocol.md');
   const protocolExists = fs.existsSync(protocolPath);
-  const apiLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:3001/health 2>/dev/null') === '200';
-  const promptBrowserLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:3002/api/stats 2>/dev/null') === '200';
-  const contactVerifyLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:3003/ 2>/dev/null') === '200';
+  const apiLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 https://127.0.0.1:3001/health 2>/dev/null') === '200';
+  const promptBrowserLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 https://127.0.0.1:3002/api/stats 2>/dev/null') === '200';
+  const contactVerifyLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 https://127.0.0.1:3003/ 2>/dev/null') === '200';
   const downloadDaemonLive = run('launchctl list | grep -q download-daemon && echo "1" || echo "0"', 1000) === '1';
 
   // Parse all session logs for instance history
@@ -603,7 +617,7 @@ ${renderNav('dashboard')}
     <div class="card clickable" data-metric="prompts" data-label="Prompts">
       <h3>Prompts</h3>
       <div class="value" id="v-prompts">${state.agents.promptTotal}</div>
-      <div class="sub">${state.agents.promptSessions} sessions · <a href="http://localhost:3002" style="color:#00ff88;font-size:11px">browse →</a></div>
+      <div class="sub">${state.agents.promptSessions} sessions · <a href="https://localhost:3002" style="color:#00ff88;font-size:11px">browse →</a></div>
     </div>
     <div class="card clickable" data-metric="sessions" data-label="Sessions">
       <h3>Sessions</h3>
@@ -649,10 +663,10 @@ ${renderNav('dashboard')}
   <div class="agent-grid">
     <div class="agent-card">
       <h4>Services</h4>
-      <div class="agent-status"><span class="dot live"></span> <a href="http://localhost:3000" style="color:#e0e0e0">Dashboard</a> <span style="color:#555">:3000</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.apiLive ? 'live' : 'down'}"></span> <a href="http://localhost:3001" style="color:#e0e0e0">PracticeLife API</a> <span style="color:#555">:3001</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.promptBrowserLive ? 'live' : 'down'}"></span> <a href="http://localhost:3002" style="color:#e0e0e0">Prompt Browser</a> <span style="color:#555">:3002</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.contactVerifyLive ? 'live' : 'down'}"></span> <a href="http://localhost:3003" style="color:#e0e0e0">Contact Verify</a> <span style="color:#555">:3003</span></div>
+      <div class="agent-status"><span class="dot live"></span> <a href="https://localhost:3000" style="color:#e0e0e0">Dashboard</a> <span style="color:#555">:3000</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.apiLive ? 'live' : 'down'}"></span> <a href="https://localhost:3001" style="color:#e0e0e0">PracticeLife API</a> <span style="color:#555">:3001</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.promptBrowserLive ? 'live' : 'down'}"></span> <a href="https://localhost:3002" style="color:#e0e0e0">Prompt Browser</a> <span style="color:#555">:3002</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.contactVerifyLive ? 'live' : 'down'}"></span> <a href="https://localhost:3003" style="color:#e0e0e0">Contact Verify</a> <span style="color:#555">:3003</span></div>
       <div class="agent-status"><span class="dot ${state.agents.downloadDaemonLive ? 'live' : 'down'}"></span> Download Daemon <span style="color:#555">(bg)</span></div>
       <div class="agent-status"><span class="dot ${state.agents.protocolActive ? 'live' : 'off'}"></span> Agent Protocol</div>
       <div style="margin-top:8px;color:#555;font-size:11px">${state.agents.promptTotal} prompts · ${state.agents.promptSessions} sessions</div>
@@ -2004,7 +2018,14 @@ ${blockerCards}
 
 // ─── Server ──────────────────────────────────────────────────────────
 
-const server = http.createServer((req, res) => {
+
+// SSL certificate options
+const sslOptions = {
+  key: fs.readFileSync(path.join(process.env.HOME, '.ssl/localhost.key')),
+  cert: fs.readFileSync(path.join(process.env.HOME, '.ssl/localhost.crt'))
+};
+
+const server = https.createServer(sslOptions, (req, res) => {
   if (req.url === '/api/state') {
     const state = getState();
     recordHistory(state);
@@ -2700,9 +2721,9 @@ td {
 server.listen(PORT, () => {
   console.log(`\n  Ω₀ PracticeLife Dashboard`);
   console.log(`  ========================`);
-  console.log(`  http://localhost:${PORT}`);
-  console.log(`  API: http://localhost:${PORT}/api/state`);
-  console.log(`  History: http://localhost:${PORT}/api/history\n`);
+  console.log(`  https://localhost:${PORT}`);
+  console.log(`  API: https://localhost:${PORT}/api/state`);
+  console.log(`  History: https://localhost:${PORT}/api/history\n`);
 });
 
 // ─── Dependencies page ───────────────────────────────────────────────
