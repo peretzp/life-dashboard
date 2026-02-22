@@ -21,3 +21,8 @@ credentials.*
 *.key
 *.crt
 *.pem
+*.log
+*.err
+*.jsonl
+*.backup
+*.http-backup
