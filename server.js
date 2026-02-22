@@ -415,6 +415,9 @@ function renderNav(activePage = 'dashboard') {
     { path: '/plan', name: 'Plan Tracker', key: 'plan' },
     { path: '/stream', name: 'Life Stream', key: 'stream' },
     { path: '/threads', name: 'Threads', key: 'threads' },
+    { path: '/prompts', name: '🚀 Prompts', key: 'prompts' },
+    { path: '/search', name: '🔍 Search', key: 'search' },
+    { path: '/cheatsheet', name: '📋 Cheatsheet', key: 'cheatsheet' },
   ];
 
   return `<div class="nav" style="display:flex;gap:16px;margin-bottom:12px">\n` +
@@ -2116,11 +2119,287 @@ const server = https.createServer(sslOptions, (req, res) => {
     res.end(JSON.stringify(blockers, null, 2));
     return;
   }
+  if (req.url === '/cheatsheet') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderCheatsheetHTML());
+    return;
+  }
+  if (req.url === '/prompts') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderPromptsHTML());
+    return;
+  }
+  if (req.url === '/api/prompts/suggested') {
+    try {
+      const prompts = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.claude/suggested-prompts.json'), 'utf8'));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(prompts, null, 2));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+  if (req.url.startsWith('/search')) {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    const query = decodeURIComponent(req.url.split('?q=')[1] || '');
+    res.end(renderSearchHTML(query));
+    return;
+  }
   const state = getState();
   recordHistory(state);
   res.writeHead(200, { 'Content-Type': 'text/html' });
   res.end(renderHTML(state));
 });
+
+// ─── Cheat Sheet Page ─────────────────────────────────────────────────
+
+function renderCheatsheetHTML() {
+  const cheatsheet = fs.readFileSync(path.join(process.env.HOME, '.claude/CHEAT-SHEET.md'), 'utf8');
+
+  // Simple markdown-to-HTML conversion (basic headers, code blocks, lists)
+  let html = cheatsheet
+    .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+    .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+    .replace(/^# (.+)$/gm, '<h1>$1</h1>')
+    .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+    .replace(/`([^`]+)`/g, '<code>$1</code>')
+    .replace(/^- (.+)$/gm, '<li>$1</li>')
+    .replace(/\n\n/g, '</p><p>')
+    .replace(/```bash\n([\s\S]+?)\n```/g, '<pre class="code-block">$1</pre>')
+    .replace(/```\n([\s\S]+?)\n```/g, '<pre class="code-block">$1</pre>')
+    .replace(/\| (.+) \|/g, (match) => {
+      const cells = match.split('|').filter(c => c.trim()).map(c => `<td>${c.trim()}</td>`).join('');
+      return `<tr>${cells}</tr>`;
+    });
+
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>Claude Code Cheat Sheet | Ω₀</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; max-width:1200px; margin:0 auto; line-height:1.6; }
+h1 { color:#00ff88; font-size:32px; margin:20px 0 10px 0; }
+h2 { color:#00aaff; font-size:20px; margin:30px 0 10px 0; padding-bottom:6px; border-bottom:1px solid #222; }
+h3 { color:#ffaa00; font-size:16px; margin:20px 0 8px 0; }
+p { margin:10px 0; color:#ccc; }
+code { background:#151515; padding:2px 6px; border-radius:3px; color:#00ff88; font-size:13px; }
+pre.code-block { background:#0d0d0d; border:1px solid #222; border-left:3px solid #00ff88; padding:16px; border-radius:6px; overflow-x:auto; margin:16px 0; color:#e0e0e0; font-size:13px; line-height:1.4; }
+ul { margin-left:20px; margin-top:8px; }
+li { margin:4px 0; color:#aaa; }
+table { width:100%; border-collapse:collapse; margin:16px 0; background:#0d0d0d; border-radius:6px; overflow:hidden; }
+tr { border-bottom:1px solid #1a1a1a; }
+td { padding:12px; font-size:13px; }
+td:first-child { color:#00ff88; font-weight:600; }
+strong { color:#fff; }
+.nav { display:flex; gap:16px; margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid #222; }
+.nav a { color:#555; font-size:13px; padding:4px 12px; border:1px solid #222; border-radius:6px; text-decoration:none; }
+.nav a:hover, .nav a.active { color:#00ff88; border-color:#00ff88; }
+.updated { color:#444; font-size:11px; text-align:right; margin-top:32px; }
+</style>
+</head><body>
+${renderNav('cheatsheet')}
+${html}
+<div class="updated">Last updated: 2026-02-21 | Location: ~/.claude/CHEAT-SHEET.md</div>
+</body></html>`;
+}
+
+// ─── Suggested Prompts Page ───────────────────────────────────────────
+
+function renderPromptsHTML() {
+  let data;
+  try {
+    data = JSON.parse(fs.readFileSync(path.join(process.env.HOME, '.claude/suggested-prompts.json'), 'utf8'));
+  } catch (e) {
+    return `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e0e0e0;font-family:monospace;padding:40px;text-align:center">
+      <h1 style="color:#ff4444">Error Loading Prompts</h1>
+      <p style="color:#666;margin-top:12px">${e.message}</p>
+    </body></html>`;
+  }
+
+  const categories = {};
+  for (const p of data.prompts) {
+    if (!categories[p.category]) categories[p.category] = [];
+    categories[p.category].push(p);
+  }
+
+  const categoryHTML = Object.entries(categories).map(([cat, prompts]) => {
+    const cards = prompts.map(p => `
+      <div class="prompt-card" data-id="${p.id}">
+        <div class="prompt-header">
+          <div class="prompt-title">${p.title}</div>
+          <div class="prompt-id">#${p.id}</div>
+        </div>
+        <div class="prompt-template">${p.template.replace(/\[([^\]]+)\]/g, '<span class="var">[$1]</span>')}</div>
+        <div class="prompt-meta">
+          <span class="meta-item">⏱ ${p.estimated_time}</span>
+          <span class="meta-item">💰 ${p.estimated_cost}</span>
+        </div>
+        <div class="prompt-outcome">→ ${p.expected_outcome}</div>
+        <div class="prompt-tags">${p.tags.map(t => `<span class="tag">${t}</span>`).join('')}</div>
+        <button class="copy-btn" onclick="copyPrompt('${p.id}')">Copy Template</button>
+      </div>
+    `).join('');
+
+    return `
+      <div class="category-section">
+        <h2 class="category-title">${cat} (${prompts.length})</h2>
+        <div class="prompt-grid">${cards}</div>
+      </div>
+    `;
+  }).join('');
+
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>Suggested Prompts | Ω₀</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
+.container { max-width:1400px; margin:0 auto; }
+h1 { color:#00ff88; font-size:28px; margin-bottom:8px; }
+.subtitle { color:#666; font-size:13px; margin-bottom:24px; }
+.category-section { margin-bottom:40px; }
+.category-title { color:#00aaff; font-size:18px; margin-bottom:16px; padding-bottom:8px; border-bottom:1px solid #222; }
+.prompt-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); gap:16px; }
+.prompt-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #00ff88; border-radius:8px; padding:16px; transition:border-color .2s,box-shadow .2s; }
+.prompt-card:hover { border-left-color:#00aaff; box-shadow:0 0 20px rgba(0,255,136,.08); }
+.prompt-header { display:flex; justify-content:space-between; align-items:start; margin-bottom:12px; }
+.prompt-title { color:#fff; font-size:15px; font-weight:600; flex:1; }
+.prompt-id { color:#444; font-size:11px; font-weight:600; background:#1a1a1a; padding:2px 8px; border-radius:4px; }
+.prompt-template { color:#ccc; font-size:13px; line-height:1.6; margin-bottom:12px; }
+.var { color:#ffaa00; font-weight:600; }
+.prompt-meta { display:flex; gap:16px; margin-bottom:8px; }
+.meta-item { color:#666; font-size:11px; }
+.prompt-outcome { color:#00ff88; font-size:12px; margin-bottom:12px; font-style:italic; }
+.prompt-tags { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
+.tag { background:#1a1a1a; color:#777; font-size:10px; padding:3px 8px; border-radius:4px; }
+.copy-btn { background:#00ff8822; color:#00ff88; border:1px solid #00ff8844; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:12px; font-family:inherit; width:100%; transition:all .2s; }
+.copy-btn:hover { background:#00ff8833; border-color:#00ff88; }
+.copy-btn:active { transform:scale(0.98); }
+.stats { display:flex; gap:20px; margin-bottom:24px; }
+.stat { background:#0d0d0d; border:1px solid #1a1a1a; border-radius:8px; padding:16px 24px; text-align:center; }
+.stat-value { color:#00ff88; font-size:32px; font-weight:600; }
+.stat-label { color:#666; font-size:11px; margin-top:4px; text-transform:uppercase; letter-spacing:1px; }
+.toast { position:fixed; top:20px; right:20px; background:#00ff88; color:#0a0a0a; padding:12px 20px; border-radius:8px; font-weight:600; display:none; animation:slideIn .3s; }
+.toast.show { display:block; }
+@keyframes slideIn { from { transform:translateX(100%); opacity:0; } to { transform:translateX(0); opacity:1; } }
+</style>
+</head><body>
+<div class="container">
+${renderNav('prompts')}
+
+<h1>🚀 Suggested Prompts</h1>
+<div class="subtitle">Curated prompts from ThePromptReviewer based on ${data.meta.source}</div>
+
+<div class="stats">
+  <div class="stat">
+    <div class="stat-value">${data.prompts.length}</div>
+    <div class="stat-label">Total Prompts</div>
+  </div>
+  <div class="stat">
+    <div class="stat-value">${Object.keys(categories).length}</div>
+    <div class="stat-label">Categories</div>
+  </div>
+</div>
+
+${categoryHTML}
+
+<div id="toast" class="toast"></div>
+
+<script>
+const promptsData = ${JSON.stringify(data.prompts)};
+function copyPrompt(id) {
+  const p = promptsData.find(x => x.id === id);
+  if (!p) return;
+  navigator.clipboard.writeText(p.template).then(() => {
+    const toast = document.getElementById('toast');
+    toast.textContent = '✓ Copied to clipboard!';
+    toast.classList.add('show');
+    setTimeout(() => toast.classList.remove('show'), 2000);
+  });
+}
+</script>
+
+</div>
+</body></html>`;
+}
+
+// ─── MemoryAtlas Search Page ──────────────────────────────────────────
+
+function renderSearchHTML(query) {
+  let results = [];
+  if (query) {
+    // Query MemoryAtlas database
+    const atlasDb = path.join(process.env.HOME, 'tools/memoryatlas/data/atlas.db');
+    if (fs.existsSync(atlasDb)) {
+      const searchQuery = `SELECT id, title, duration, recorded, transcription_path FROM asset WHERE title LIKE '%${query.replace(/'/g, "''")}%' OR recording_path LIKE '%${query.replace(/'/g, "''")}%' LIMIT 50`;
+      const raw = run(`sqlite3 "${atlasDb}" "${searchQuery}"`, 8000);
+      if (raw !== '—') {
+        results = raw.split('\n').filter(Boolean).map(line => {
+          const [id, title, duration, recorded, transcription_path] = line.split('|');
+          return { id, title, duration, recorded, transcription_path };
+        });
+      }
+    }
+  }
+
+  const resultsHTML = results.length > 0
+    ? results.map(r => `
+        <div class="result-card">
+          <div class="result-title">${r.title || 'Untitled'}</div>
+          <div class="result-meta">
+            <span>🎙 ${r.duration || 'Unknown'}</span>
+            <span>📅 ${r.recorded || 'Unknown'}</span>
+          </div>
+          ${r.transcription_path ? `<div class="result-transcript">Transcription available</div>` : ''}
+        </div>
+      `).join('')
+    : query
+      ? '<div style="color:#666;text-align:center;padding:40px">No results found</div>'
+      : '<div style="color:#666;text-align:center;padding:40px">Enter a search query above</div>';
+
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>MemoryAtlas Search | Ω₀</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
+.container { max-width:1200px; margin:0 auto; }
+h1 { color:#00ff88; font-size:28px; margin-bottom:24px; }
+.search-box { margin-bottom:32px; }
+.search-box input { width:100%; padding:16px; background:#0d0d0d; border:1px solid #222; border-radius:8px; color:#e0e0e0; font-family:inherit; font-size:16px; }
+.search-box input:focus { outline:none; border-color:#00ff88; }
+.results { }
+.result-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #00aaff; border-radius:8px; padding:16px; margin-bottom:12px; }
+.result-title { color:#fff; font-size:16px; font-weight:600; margin-bottom:8px; }
+.result-meta { display:flex; gap:16px; color:#666; font-size:12px; }
+.result-transcript { color:#00ff88; font-size:11px; margin-top:8px; }
+.count { color:#666; font-size:13px; margin-bottom:16px; }
+</style>
+</head><body>
+<div class="container">
+${renderNav('search')}
+
+<h1>🔍 MemoryAtlas Search</h1>
+
+<div class="search-box">
+  <form method="GET" action="/search">
+    <input type="text" name="q" placeholder="Search voice memos..." value="${query || ''}" autofocus>
+  </form>
+</div>
+
+${query ? `<div class="count">Found ${results.length} results for "${query}"</div>` : ''}
+
+<div class="results">
+  ${resultsHTML}
+</div>
+
+</div>
+</body></html>`;
+}
 
 // ─── Endpoints Index Page ─────────────────────────────────────────────
 
