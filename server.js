@@ -4230,20 +4230,36 @@ function getMachineStatus() {
     litellm: run('curl -s --max-time 2 http://localhost:4000/health/readiness >/dev/null 2>&1 && echo up || echo down'),
   };
 
-  // Anvil
+  // Anvil — single API call to Anvil dashboard (replaces multiple probes)
   const anvilPing = run('ping -c 1 -W 1 192.168.1.105 2>/dev/null | grep "time=" | sed "s/.*time=//" || echo "down"');
-  const anvilOllama = run('curl -s --max-time 3 http://192.168.1.105:11434/api/tags 2>/dev/null || echo "down"');
+  const anvilDashJson = run('curl -s --max-time 3 http://192.168.1.105:3000/api/status 2>/dev/null || echo ""');
+  let anvilDash = null;
   let anvilModels = [];
-  try {
-    const data = JSON.parse(anvilOllama);
-    anvilModels = (data.models || []).map(m => ({ name: m.name, size: (m.size / 1e9).toFixed(1) + ' GB' }));
-  } catch { }
-  const anvilPs = run('curl -s --max-time 3 http://192.168.1.105:11434/api/ps 2>/dev/null || echo "{}"');
   let anvilLoaded = [];
+  let anvilMetrics = null;
+  let anvilJobs = null;
+  let anvilSystem = null;
   try {
-    const psData = JSON.parse(anvilPs);
-    anvilLoaded = (psData.models || []).map(m => m.name);
-  } catch { }
+    anvilDash = JSON.parse(anvilDashJson);
+    const o = anvilDash.ollama || {};
+    anvilModels = (o.available || []).map(m => ({ name: m.name, size: m.sizeGB + ' GB' }));
+    anvilLoaded = (o.loaded || []).map(m => m.name);
+    anvilMetrics = anvilDash.metrics;
+    anvilJobs = anvilDash.jobs;
+    anvilSystem = anvilDash.system;
+  } catch {
+    // Fallback: try direct Ollama if dashboard is down
+    const anvilOllama = run('curl -s --max-time 3 http://192.168.1.105:11434/api/tags 2>/dev/null || echo "down"');
+    try {
+      const data = JSON.parse(anvilOllama);
+      anvilModels = (data.models || []).map(m => ({ name: m.name, size: (m.size / 1e9).toFixed(1) + ' GB' }));
+    } catch { }
+    const anvilPs = run('curl -s --max-time 3 http://192.168.1.105:11434/api/ps 2>/dev/null || echo "{}"');
+    try {
+      const psData = JSON.parse(anvilPs);
+      anvilLoaded = (psData.models || []).map(m => m.name);
+    } catch { }
+  }
 
   // NAS
   const nasPing = run('ping -c 1 -W 1 192.168.1.57 2>/dev/null | grep "time=" | sed "s/.*time=//" || echo "down"');
@@ -4269,6 +4285,10 @@ function getMachineStatus() {
       models: anvilModels,
       loadedModels: anvilLoaded,
       ollamaUp: anvilModels.length > 0,
+      dashboardUp: !!anvilDash,
+      metrics: anvilMetrics,
+      jobs: anvilJobs,
+      system: anvilSystem,
     },
     nas: {
       hostname: 'Synology DS223j',
@@ -4342,15 +4362,24 @@ ${renderNav('machines')}
   </div>
 
   <div class="card">
-    <div class="card-header">${dot(m.anvil.ollamaUp)}<div><div class="card-name">Anvil</div><div class="card-role">AI Compute (M3 Ultra, 96GB)</div></div></div>
+    <div class="card-header">${dot(m.anvil.ollamaUp)}<div><div class="card-name">Anvil ${m.anvil.dashboardUp ? '<a href="http://192.168.1.105:3000" style="color:#00aaff;font-size:11px;font-weight:normal;margin-left:8px;text-decoration:none">dashboard</a>' : ''}</div><div class="card-role">AI Compute (M3 Ultra, 96GB)</div></div></div>
     <div class="card-ip">LAN: ${m.anvil.ip} | TS: ${m.anvil.tailscale}</div>
     <div style="margin-top:8px">
       <div class="metric"><span class="metric-label">Ping</span><span class="metric-value">${m.anvil.ping}</span></div>
-      <div class="metric"><span class="metric-label">Models</span><span class="metric-value">${m.anvil.models.length} installed (${totalVRAM} GB)</span></div>
-      <div class="metric"><span class="metric-label">Loaded</span><span class="metric-value">${m.anvil.loadedModels.length > 0 ? m.anvil.loadedModels.join(', ') : 'none active'}</span></div>
+      ${m.anvil.system ? `<div class="metric"><span class="metric-label">Uptime</span><span class="metric-value">${m.anvil.system.uptime}</span></div>` : ''}
+      ${m.anvil.metrics ? `
+      <div class="metric"><span class="metric-label">GPU</span><span class="metric-value" style="color:${m.anvil.metrics.gpuUsage > 50 ? '#ffaa00' : '#00ff88'}">${m.anvil.metrics.gpuUsage.toFixed(1)}%</span></div>
+      <div class="metric"><span class="metric-label">CPU</span><span class="metric-value">E: ${m.anvil.metrics.ecpuUsage.toFixed(0)}% P: ${m.anvil.metrics.pcpuUsage.toFixed(0)}%</span></div>
+      <div class="metric"><span class="metric-label">RAM</span><span class="metric-value">${m.anvil.metrics.ramUsedGB.toFixed(1)} / ${m.anvil.metrics.ramTotalGB.toFixed(0)} GB</span></div>
+      <div class="metric"><span class="metric-label">Swap</span><span class="metric-value" style="color:${m.anvil.metrics.swapUsedGB > 1 ? '#ff4444' : '#888'}">${m.anvil.metrics.swapUsedGB.toFixed(2)} GB</span></div>
+      <div class="metric"><span class="metric-label">Power</span><span class="metric-value">${m.anvil.metrics.powerW.toFixed(1)}W (CPU ${m.anvil.metrics.cpuPowerW.toFixed(1)}W GPU ${m.anvil.metrics.gpuPowerW.toFixed(1)}W)</span></div>
+      <div class="metric"><span class="metric-label">Temp</span><span class="metric-value" style="color:${m.anvil.metrics.cpuTemp > 70 ? '#ff4444' : m.anvil.metrics.cpuTemp > 50 ? '#ffaa00' : '#888'}">CPU ${m.anvil.metrics.cpuTemp.toFixed(0)}&deg;C GPU ${m.anvil.metrics.gpuTemp.toFixed(0)}&deg;C</span></div>
+      ` : ''}
+      <div class="metric"><span class="metric-label">VRAM</span><span class="metric-value">${totalVRAM} / 96 GB</span></div>
+      ${m.anvil.jobs ? `<div class="metric"><span class="metric-label">Jobs</span><span class="metric-value">${m.anvil.jobs.total} total, ${m.anvil.jobs.active} active, ${m.anvil.jobs.todayCount} today</span></div>` : ''}
     </div>
     <div class="model-list">
-      <div style="color:#666;font-size:11px;margin:8px 0 4px">MODELS</div>
+      <div style="color:#666;font-size:11px;margin:8px 0 4px">MODELS (${m.anvil.loadedModels.length} loaded)</div>
       ${m.anvil.models.map(md => `<div class="model ${m.anvil.loadedModels.includes(md.name) ? 'loaded' : ''}"><span class="model-name">${md.name}</span><span class="model-size">${md.size}</span></div>`).join('')}
     </div>
   </div>
