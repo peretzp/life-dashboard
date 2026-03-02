@@ -435,6 +435,7 @@ function renderNav(activePage = 'dashboard') {
     { path: '/prompts', name: 'Prompts', key: 'prompts' },
     { path: '/search', name: 'Search', key: 'search' },
     { path: '/cheatsheet', name: 'Cheatsheet', key: 'cheatsheet' },
+    { path: '/downloads', name: 'Downloads', key: 'downloads' },
   ];
 
   return `<div class="nav" style="display:flex;gap:16px;margin-bottom:12px">\n` +
@@ -2623,6 +2624,145 @@ const server = https.createServer(sslOptions, (req, res) => {
     }
     return;
   }
+  if (req.url === '/downloads') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderDownloadsHTML());
+    return;
+  }
+  if (req.url === '/api/downloads') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(getDownloadsData(), null, 2));
+    return;
+  }
+  if (req.url === '/api/downloads/rules' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const update = JSON.parse(body);
+        handleDownloadsRuleUpdate(update, res);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  if (req.url === '/api/downloads/undo' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { filename, destination } = JSON.parse(body);
+        handleDownloadsUndo(filename, destination, res);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  if (req.url === '/api/downloads/redirect' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { filename, from, to } = JSON.parse(body);
+        handleDownloadsRedirect(filename, from, to, res);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  if (req.url === '/api/downloads/sendto' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { filename, to } = JSON.parse(body);
+        handleDownloadsSendTo(filename, to, res);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  if (req.url === '/api/downloads/corrections') {
+    try {
+      const lines = fs.readFileSync(path.join(process.env.HOME, '.download-corrections.jsonl'), 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify({ corrections: lines, total: lines.length }));
+    } catch {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ corrections: [], total: 0 }));
+    }
+    return;
+  }
+  if (req.url === '/api/downloads/pin' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { filename } = JSON.parse(body);
+        handleDownloadsPin(filename, res);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  // ─── Downloads: Tags API ───
+  if (req.url === '/api/downloads/tags' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { filename, tags } = JSON.parse(body);
+        handleDownloadsTags(filename, tags, res);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  // ─── Downloads: Move to arbitrary path ───
+  if (req.url === '/api/downloads/moveto' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { filename, destination } = JSON.parse(body);
+        handleDownloadsMoveTo(filename, destination, res);
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  // ─── Downloads: File metadata ───
+  if (req.url.startsWith('/api/downloads/meta/')) {
+    const filename = decodeURIComponent(req.url.replace('/api/downloads/meta/', ''));
+    handleDownloadsMeta(filename, res);
+    return;
+  }
+  // ─── Downloads: PDF preview (serve raw file) ───
+  if (req.url.startsWith('/api/downloads/preview/')) {
+    const filename = decodeURIComponent(req.url.replace('/api/downloads/preview/', ''));
+    handleDownloadsPreview(filename, res);
+    return;
+  }
+  // ─── Downloads: Browse directories ───
+  if (req.url.startsWith('/api/downloads/browse')) {
+    const dirPath = decodeURIComponent(req.url.split('?path=')[1] || process.env.HOME);
+    handleDownloadsBrowse(dirPath, res);
+    return;
+  }
   if (req.url.startsWith('/search')) {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     const query = decodeURIComponent(req.url.split('?q=')[1] || '');
@@ -4420,4 +4560,847 @@ ${renderNav('machines')}
 </div>
 </div></body></html>`;
 }
+
+// ─── Downloads Page — File Organization Visibility + Rule Management ───
+
+const DOWNLOADS_DIR = path.join(process.env.HOME, 'Downloads');
+const DOWNLOAD_RULES_FILE = path.join(DOWNLOADS_DIR, '.download-rules.json');
+const DOWNLOAD_LOG_FILE = path.join(process.env.HOME, '.download-daemon.log');
+const DOWNLOAD_PINS_FILE = path.join(DOWNLOADS_DIR, '.download-pinned.json');
+const DOWNLOAD_CORRECTIONS_FILE = path.join(process.env.HOME, '.download-corrections.jsonl');
+const PLAYWRIGHT_SEEN_FILE = path.join(process.env.HOME, '.playwright-bridge-seen.json');
+const DOWNLOAD_TAGS_FILE = path.join(DOWNLOADS_DIR, '.download-tags.json');
+
+function getDownloadsData() {
+  // Parse recent activity from daemon log
+  const activity = [];
+  try {
+    const logContent = fs.readFileSync(DOWNLOAD_LOG_FILE, 'utf8');
+    const lines = logContent.split('\n').filter(Boolean).slice(-200);
+    for (const line of lines) {
+      const tsMatch = line.match(/^\[([^\]]+)\]\s*(.*)/);
+      if (!tsMatch) continue;
+      const [, timestamp, msg] = tsMatch;
+      if (msg.startsWith('✓ MOVED:') || msg.startsWith('✓ COPIED:')) {
+        const moveMatch = msg.match(/✓ (MOVED|COPIED): (.+?) → (.+?) \(rule: (.+?)\)/);
+        if (moveMatch) {
+          activity.push({ type: moveMatch[1].toLowerCase(), filename: moveMatch[2], destination: moveMatch[3], rule: moveMatch[4], timestamp });
+        }
+      } else if (msg.startsWith('NO RULE:')) {
+        const noMatch = msg.match(/NO RULE: (.+?) \(no matching rule found\)/);
+        if (noMatch) activity.push({ type: 'no_rule', filename: noMatch[1], timestamp });
+      } else if (msg.startsWith('SKIP:') && msg.includes('too recent')) {
+        const skipMatch = msg.match(/SKIP: (.+?) \(too recent: (\d+)s < (\d+)s\)/);
+        if (skipMatch) activity.push({ type: 'pending', filename: skipMatch[1], age: parseInt(skipMatch[2]), threshold: parseInt(skipMatch[3]), timestamp });
+      } else if (msg.startsWith('SKIP:') && msg.includes('already exists')) {
+        const skipMatch = msg.match(/SKIP: (.+?) → (.+?) \(already exists\)/);
+        if (skipMatch) activity.push({ type: 'skipped_exists', filename: skipMatch[1], destination: skipMatch[2], timestamp });
+      }
+    }
+  } catch {}
+
+  // Current Downloads directory contents
+  const pending = [];
+  const pins = loadPins();
+  try {
+    const files = fs.readdirSync(DOWNLOADS_DIR);
+    for (const file of files) {
+      if (file.startsWith('.')) continue;
+      const fp = path.join(DOWNLOADS_DIR, file);
+      try {
+        const stats = fs.statSync(fp);
+        if (stats.isDirectory()) continue;
+        const ageSec = Math.floor((Date.now() - stats.mtimeMs) / 1000);
+        const pinned = pins.includes(file);
+        // Predict which rule will match
+        let matchingRule = null;
+        try {
+          const config = JSON.parse(fs.readFileSync(DOWNLOAD_RULES_FILE, 'utf8'));
+          for (const rule of config.rules) {
+            if (rule.disabled) continue;
+            const patternsMatch = (rule.patterns || []).some(p => {
+              const regex = new RegExp('^' + p.replace(/\*/g, '.*').replace(/\?/g, '.') + '$', 'i');
+              return regex.test(file);
+            });
+            if (!patternsMatch) continue;
+            if (rule.contains && rule.contains.length > 0) {
+              const hasKw = rule.contains.some(kw => file.toLowerCase().includes(kw.toLowerCase()));
+              if (!hasKw) continue;
+            }
+            if (rule.exclude && rule.exclude.length > 0) {
+              const hasEx = rule.exclude.some(kw => file.toLowerCase().includes(kw.toLowerCase()));
+              if (hasEx) continue;
+            }
+            if (rule.size_gt) {
+              const mult = { KB: 1024, MB: 1048576, GB: 1073741824 };
+              const m = rule.size_gt.match(/^(\d+)(KB|MB|GB)?$/i);
+              if (m) { const min = parseInt(m[1]) * (mult[(m[2]||'').toUpperCase()] || 1); if (stats.size <= min) continue; }
+            }
+            matchingRule = rule.name;
+            break;
+          }
+        } catch {}
+        pending.push({
+          filename: file,
+          size: stats.size,
+          ageSec,
+          countdown: Math.max(0, 300 - ageSec),
+          matchingRule: pinned ? '(pinned)' : matchingRule,
+          pinned
+        });
+      } catch {}
+    }
+    pending.sort((a, b) => a.countdown - b.countdown);
+  } catch {}
+
+  // Load rules
+  let rules = [];
+  try {
+    const config = JSON.parse(fs.readFileSync(DOWNLOAD_RULES_FILE, 'utf8'));
+    rules = config.rules.map((r, i) => ({ ...r, index: i }));
+  } catch {}
+
+  // Collect all known destinations (from rules + recent activity + common paths)
+  const destSet = new Set();
+  for (const r of rules) { if (r.destination) destSet.add(r.destination.replace('~', process.env.HOME)); }
+  for (const a of activity) { if (a.destination) destSet.add(a.destination); }
+  // Add common paths
+  ['~/Documents/Personal/', '~/Documents/Work/', '~/Documents/Personal/Tax-2024/', '~/Documents/Personal/Tax-2023/',
+   '~/Documents/Data/', '~/Documents/Presentations/', '~/Pictures/Downloads/', '~/Pictures/Screenshots/',
+   '~/Movies/Downloads/', '~/Music/Downloads/', '~/Projects/', '~/Desktop/'].forEach(p => destSet.add(p.replace('~', process.env.HOME)));
+  const destinations = [...destSet].sort();
+
+  // Load corrections
+  let corrections = [];
+  try {
+    corrections = fs.readFileSync(DOWNLOAD_CORRECTIONS_FILE, 'utf8').split('\n').filter(Boolean).map(l => JSON.parse(l));
+  } catch {}
+
+  // Stats
+  const moved = activity.filter(a => a.type === 'moved' || a.type === 'copied');
+  const noRule = activity.filter(a => a.type === 'no_rule');
+  const uniqueNoRule = [...new Set(noRule.map(a => a.filename))];
+
+  // Playwright bridge stats
+  let playwrightBridged = 0, playwrightSkipped = 0, playwrightDirs = 0;
+  try {
+    const seen = JSON.parse(fs.readFileSync(PLAYWRIGHT_SEEN_FILE, 'utf8'));
+    for (const v of Object.values(seen)) {
+      if (v.bridged) playwrightBridged++;
+      else if (v.skipped) playwrightSkipped++;
+    }
+    // Count active dirs
+    const tmpDir = process.env.TMPDIR || '/tmp';
+    try {
+      for (const entry of fs.readdirSync(tmpDir)) {
+        if (entry.startsWith('playwright-artifacts-')) playwrightDirs++;
+      }
+    } catch {}
+  } catch {}
+
+  return {
+    activity: activity.reverse().slice(0, 50),
+    pending,
+    rules,
+    pins,
+    destinations,
+    corrections: corrections.slice(-20).reverse(),
+    stats: {
+      totalMoved: moved.length,
+      totalNoRule: uniqueNoRule.length,
+      totalPending: pending.length,
+      totalRules: rules.length,
+      totalCorrections: corrections.length,
+      daemonRunning: run('launchctl list | grep -q download-daemon && echo "1" || echo "0"', 1000) === '1',
+      playwrightBridged,
+      playwrightSkipped,
+      playwrightDirs
+    },
+    timestamp: new Date().toISOString()
+  };
+}
+
+function loadPins() {
+  try {
+    return JSON.parse(fs.readFileSync(DOWNLOAD_PINS_FILE, 'utf8'));
+  } catch { return []; }
+}
+
+function savePins(pins) {
+  fs.writeFileSync(DOWNLOAD_PINS_FILE, JSON.stringify(pins, null, 2));
+}
+
+function handleDownloadsRuleUpdate(update, res) {
+  const config = JSON.parse(fs.readFileSync(DOWNLOAD_RULES_FILE, 'utf8'));
+
+  if (update.action === 'add') {
+    config.rules.push(update.rule);
+  } else if (update.action === 'delete') {
+    config.rules.splice(update.index, 1);
+  } else if (update.action === 'update') {
+    config.rules[update.index] = { ...config.rules[update.index], ...update.rule };
+  } else if (update.action === 'toggle') {
+    config.rules[update.index].disabled = !config.rules[update.index].disabled;
+  } else if (update.action === 'reorder') {
+    const [removed] = config.rules.splice(update.from, 1);
+    config.rules.splice(update.to, 0, removed);
+  }
+
+  fs.writeFileSync(DOWNLOAD_RULES_FILE, JSON.stringify(config, null, 2));
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, rules: config.rules.length }));
+}
+
+function handleDownloadsUndo(filename, destination, res) {
+  const src = path.join(destination, filename);
+  const dest = path.join(DOWNLOADS_DIR, filename);
+  if (!fs.existsSync(src)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `File not found: ${src}` }));
+    return;
+  }
+  fs.renameSync(src, dest);
+  fs.appendFileSync(DOWNLOAD_LOG_FILE, `[${new Date().toISOString()}] ↩ UNDO: ${filename} ← ${destination} (manual via dashboard)\n`);
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, restored: dest }));
+}
+
+function handleDownloadsRedirect(filename, fromDir, toDir, res) {
+  const src = path.join(fromDir, filename);
+  if (!fs.existsSync(src)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `File not found: ${src}` }));
+    return;
+  }
+  // Create destination if needed
+  if (!fs.existsSync(toDir)) fs.mkdirSync(toDir, { recursive: true });
+  const dest = path.join(toDir, filename);
+  fs.renameSync(src, dest);
+
+  // Log correction for learning
+  const correction = {
+    timestamp: new Date().toISOString(),
+    filename,
+    extension: path.extname(filename).toLowerCase(),
+    from: fromDir,
+    to: toDir,
+    keywords: filename.replace(/[._-]/g, ' ').toLowerCase().split(/\s+/).filter(w => w.length > 2)
+  };
+  fs.appendFileSync(DOWNLOAD_CORRECTIONS_FILE, JSON.stringify(correction) + '\n');
+
+  // Log in daemon log too
+  const shortFrom = fromDir.replace(process.env.HOME, '~');
+  const shortTo = toDir.replace(process.env.HOME, '~');
+  fs.appendFileSync(DOWNLOAD_LOG_FILE, `[${new Date().toISOString()}] ⇄ REDIRECT: ${filename} | ${shortFrom} → ${shortTo} (manual via dashboard)\n`);
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, moved: dest, correction }));
+}
+
+function handleDownloadsSendTo(filename, toDir, res) {
+  const src = path.join(DOWNLOADS_DIR, filename);
+  if (!fs.existsSync(src)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `File not found: ${src}` }));
+    return;
+  }
+  if (!fs.existsSync(toDir)) fs.mkdirSync(toDir, { recursive: true });
+  const dest = path.join(toDir, filename);
+  fs.renameSync(src, dest);
+
+  // Log as manual sort for learning
+  const correction = {
+    timestamp: new Date().toISOString(),
+    filename,
+    extension: path.extname(filename).toLowerCase(),
+    from: DOWNLOADS_DIR,
+    to: toDir,
+    keywords: filename.replace(/[._-]/g, ' ').toLowerCase().split(/\s+/).filter(w => w.length > 2),
+    source: 'pending_sendto'
+  };
+  fs.appendFileSync(DOWNLOAD_CORRECTIONS_FILE, JSON.stringify(correction) + '\n');
+  fs.appendFileSync(DOWNLOAD_LOG_FILE, `[${new Date().toISOString()}] ✓ SENT: ${filename} → ${toDir.replace(process.env.HOME, '~')} (manual via dashboard)\n`);
+
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, moved: dest }));
+}
+
+function handleDownloadsPin(filename, res) {
+  const pins = loadPins();
+  const idx = pins.indexOf(filename);
+  if (idx >= 0) {
+    pins.splice(idx, 1);
+  } else {
+    pins.push(filename);
+  }
+  savePins(pins);
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, pinned: pins.includes(filename), pins }));
+}
+
+// ─── Downloads: Tag management ───
+
+function loadTags() {
+  try { return JSON.parse(fs.readFileSync(DOWNLOAD_TAGS_FILE, 'utf8')); }
+  catch { return {}; }
+}
+
+function saveTags(tags) {
+  fs.writeFileSync(DOWNLOAD_TAGS_FILE, JSON.stringify(tags, null, 2));
+}
+
+function handleDownloadsTags(filename, tags, res) {
+  const allTags = loadTags();
+  if (!tags || tags.length === 0) {
+    delete allTags[filename];
+  } else {
+    allTags[filename] = tags;
+  }
+  saveTags(allTags);
+  res.writeHead(200, { 'Content-Type': 'application/json' });
+  res.end(JSON.stringify({ ok: true, filename, tags }));
+}
+
+// ─── Downloads: Move to any folder ───
+
+function handleDownloadsMoveTo(filename, destination, res) {
+  const src = path.join(DOWNLOADS_DIR, filename);
+  if (!fs.existsSync(src)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: `File not found: ${filename}` }));
+    return;
+  }
+  const dest = destination.replace(/^~/, process.env.HOME);
+  if (!fs.existsSync(dest)) {
+    try { fs.mkdirSync(dest, { recursive: true }); }
+    catch (e) {
+      res.writeHead(400, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: `Cannot create dir: ${e.message}` }));
+      return;
+    }
+  }
+  const destPath = path.join(dest, filename);
+  try {
+    fs.renameSync(src, destPath);
+    const shortDest = dest.replace(process.env.HOME, '~');
+    fs.appendFileSync(DOWNLOAD_LOG_FILE, `[${new Date().toISOString()}] ✓ SENT: ${filename} → ${shortDest} (manual moveto via dashboard)\n`);
+    const correction = {
+      timestamp: new Date().toISOString(), filename,
+      extension: path.extname(filename).toLowerCase(),
+      from: DOWNLOADS_DIR, to: dest,
+      keywords: filename.replace(/[._-]/g, ' ').toLowerCase().split(/\s+/).filter(w => w.length > 2),
+      source: 'moveto'
+    };
+    fs.appendFileSync(DOWNLOAD_CORRECTIONS_FILE, JSON.stringify(correction) + '\n');
+    res.writeHead(200, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ ok: true, moved: destPath }));
+  } catch (e) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: e.message }));
+  }
+}
+
+// ─── Downloads: File metadata extraction ───
+
+function handleDownloadsMeta(filename, res) {
+  const filepath = path.join(DOWNLOADS_DIR, filename);
+  if (!fs.existsSync(filepath)) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'not found' }));
+    return;
+  }
+  const stats = fs.statSync(filepath);
+  const ext = path.extname(filename).toLowerCase();
+  const mime = run(`file -b --mime-type "${filepath}"`, 3000);
+  const meta = {
+    filename, size: stats.size, ext, mime,
+    created: stats.birthtime, modified: stats.mtime,
+    tags: (loadTags()[filename] || [])
+  };
+
+  // PDF-specific: extract title, page count
+  if (ext === '.pdf') {
+    try {
+      const buf = Buffer.alloc(16384);
+      const fd = fs.openSync(filepath, 'r');
+      fs.readSync(fd, buf, 0, 16384, 0);
+      fs.closeSync(fd);
+      const header = buf.toString('latin1');
+      // Title
+      if (header.includes('/Title')) {
+        const idx = header.indexOf('/Title');
+        const s = header.indexOf('(', idx);
+        if (s > -1) { const e = header.indexOf(')', s); if (e > -1) meta.pdfTitle = header.substring(s + 1, e).trim(); }
+      }
+      // Page count (heuristic)
+      const content = fs.readFileSync(filepath).toString('latin1');
+      const pages = (content.match(/\/Type\s*\/Page[^s]/g) || []).length;
+      if (pages > 0) meta.pdfPages = pages;
+      // CreationDate
+      const dateMatch = content.match(/\/CreationDate\s*\(D:(\d{4})(\d{2})(\d{2})/);
+      if (dateMatch) meta.pdfDate = `${dateMatch[1]}-${dateMatch[2]}-${dateMatch[3]}`;
+    } catch {}
+  }
+
+  // Image-specific
+  if (['.png', '.jpg', '.jpeg', '.gif', '.webp', '.heic'].includes(ext)) {
+    const dims = run(`sips -g pixelWidth -g pixelHeight "${filepath}" 2>/dev/null | grep pixel`, 3000);
+    if (dims) {
+      const wMatch = dims.match(/pixelWidth:\s*(\d+)/);
+      const hMatch = dims.match(/pixelHeight:\s*(\d+)/);
+      if (wMatch) meta.imgWidth = parseInt(wMatch[1]);
+      if (hMatch) meta.imgHeight = parseInt(hMatch[1]);
+    }
+  }
+
+  res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+  res.end(JSON.stringify(meta, null, 2));
+}
+
+// ─── Downloads: Serve file for preview ───
+
+function handleDownloadsPreview(filename, res) {
+  const filepath = path.join(DOWNLOADS_DIR, filename);
+  if (!fs.existsSync(filepath)) {
+    res.writeHead(404); res.end('Not found');
+    return;
+  }
+  const ext = path.extname(filename).toLowerCase();
+  const mimeMap = {
+    '.pdf': 'application/pdf', '.png': 'image/png', '.jpg': 'image/jpeg',
+    '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp',
+    '.svg': 'image/svg+xml', '.txt': 'text/plain', '.html': 'text/html',
+    '.csv': 'text/csv', '.json': 'application/json', '.md': 'text/markdown'
+  };
+  const contentType = mimeMap[ext] || 'application/octet-stream';
+  const stat = fs.statSync(filepath);
+  res.writeHead(200, { 'Content-Type': contentType, 'Content-Length': stat.size, 'Content-Disposition': 'inline' });
+  fs.createReadStream(filepath).pipe(res);
+}
+
+// ─── Downloads: Directory browser ───
+
+function handleDownloadsBrowse(dirPath, res) {
+  const resolved = dirPath.replace(/^~/, process.env.HOME);
+  if (!fs.existsSync(resolved) || !fs.statSync(resolved).isDirectory()) {
+    res.writeHead(404, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: 'Not a directory' }));
+    return;
+  }
+  try {
+    const entries = fs.readdirSync(resolved)
+      .filter(e => !e.startsWith('.'))
+      .map(e => {
+        try {
+          const full = path.join(resolved, e);
+          const s = fs.statSync(full);
+          return { name: e, isDir: s.isDirectory(), size: s.size };
+        } catch { return null; }
+      })
+      .filter(Boolean)
+      .filter(e => e.isDir) // Only show directories for move target selection
+      .sort((a, b) => a.name.localeCompare(b.name));
+    const parent = path.dirname(resolved);
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ path: resolved, parent, entries }));
+  } catch (e) {
+    res.writeHead(500, { 'Content-Type': 'application/json' });
+    res.end(JSON.stringify({ error: e.message }));
+  }
+}
+
+function renderDownloadsHTML() {
+  const data = getDownloadsData();
+
+  const formatSize = (bytes) => {
+    if (bytes > 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+    if (bytes > 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+    if (bytes > 1024) return (bytes / 1024).toFixed(1) + ' KB';
+    return bytes + ' B';
+  };
+
+  const formatAge = (sec) => {
+    if (sec > 3600) return Math.floor(sec / 3600) + 'h ' + Math.floor((sec % 3600) / 60) + 'm';
+    if (sec > 60) return Math.floor(sec / 60) + 'm ' + (sec % 60) + 's';
+    return sec + 's';
+  };
+
+  // Build destination options for dropdowns
+  const destOptions = data.destinations.map(d => {
+    const short = d.replace(process.env.HOME, '~');
+    return `<option value="${d}">${short}</option>`;
+  }).join('');
+
+  // Pending files table
+  const pendingRows = data.pending.map(f => {
+    const countdownColor = f.pinned ? '#aa55ff' : f.countdown <= 0 ? '#ff4444' : f.countdown < 60 ? '#ffaa00' : '#00ff88';
+    const countdownText = f.pinned ? 'PINNED' : f.countdown <= 0 ? 'READY' : formatAge(f.countdown);
+    const ruleText = f.matchingRule || '<span style="color:#ff4444">no rule</span>';
+    const pinBtn = `<button class="pin-btn ${f.pinned ? 'pinned' : ''}" onclick="togglePin('${f.filename.replace(/'/g, "\\'")}')">📌</button>`;
+    const esc = f.filename.replace(/'/g, "\\'");
+    return `<tr>
+      <td class="filename" title="${f.filename}">${f.filename.length > 40 ? f.filename.slice(0, 37) + '...' : f.filename}</td>
+      <td style="color:#555">${formatSize(f.size)}</td>
+      <td style="color:${countdownColor};font-weight:bold">${countdownText}</td>
+      <td>${ruleText}</td>
+      <td style="display:flex;gap:4px;align-items:center">
+        ${pinBtn}
+        <select class="dest-select" onchange="sendTo('${esc}',this.value);this.selectedIndex=0" title="Send to...">
+          <option value="">Send to...</option>
+          ${destOptions}
+        </select>
+      </td>
+    </tr>`;
+  }).join('');
+
+  // Activity feed
+  const activityItems = data.activity.filter(a => a.type === 'moved' || a.type === 'copied').slice(0, 30).map(a => {
+    const time = new Date(a.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+    const shortDest = a.destination.replace(process.env.HOME, '~');
+    const icon = a.type === 'moved' ? '→' : '⇒';
+    const escFile = a.filename.replace(/'/g, "\\'");
+    const escDest = a.destination.replace(/'/g, "\\'");
+    return `<div class="activity-item">
+      <span class="activity-time">${time}</span>
+      <span class="activity-file" title="${a.filename}">${a.filename.length > 30 ? a.filename.slice(0, 27) + '...' : a.filename}</span>
+      <span class="activity-arrow">${icon}</span>
+      <span class="activity-dest">${shortDest}</span>
+      <span class="activity-rule">${a.rule}</span>
+      <select class="dest-select" onchange="redirectFile('${escFile}','${escDest}',this.value);this.selectedIndex=0" title="Move elsewhere...">
+        <option value="">⇄</option>
+        ${destOptions}
+      </select>
+      <button class="undo-btn" onclick="undoMove('${escFile}','${escDest}')">↩</button>
+    </div>`;
+  }).join('');
+
+  // No-rule files
+  const noRuleItems = [...new Set(data.activity.filter(a => a.type === 'no_rule').map(a => a.filename))].slice(0, 10);
+  const noRuleHTML = noRuleItems.map(f =>
+    `<div class="no-rule-item"><span>${f}</span><button class="small-btn" onclick="showAddRule('${f.replace(/'/g, "\\'")}')">+ Rule</button></div>`
+  ).join('');
+
+  // Rules list
+  const rulesHTML = data.rules.map((r, i) => {
+    const disabled = r.disabled ? ' disabled' : '';
+    const patterns = (r.patterns || []).join(', ');
+    const dest = (r.destination || '').replace('~', '~');
+    const contains = (r.contains || []).length ? `contains: ${r.contains.join(', ')}` : '';
+    const exclude = (r.exclude || []).length ? `exclude: ${r.exclude.join(', ')}` : '';
+    const action = r.action || 'move';
+    return `<div class="rule-card${disabled}" data-index="${i}">
+      <div class="rule-header">
+        <span class="rule-num">#${i + 1}</span>
+        <span class="rule-name">${r.name}</span>
+        <span class="rule-action ${action}">${action}</span>
+        <div class="rule-controls">
+          <button onclick="toggleRule(${i})" title="${r.disabled ? 'Enable' : 'Disable'}">${r.disabled ? '⏸' : '▶'}</button>
+          <button onclick="showEditRule(${i})" title="Edit">✎</button>
+          <button onclick="deleteRule(${i})" title="Delete">✕</button>
+          ${i > 0 ? `<button onclick="moveRule(${i},${i - 1})" title="Move up">↑</button>` : ''}
+          ${i < data.rules.length - 1 ? `<button onclick="moveRule(${i},${i + 1})" title="Move down">↓</button>` : ''}
+        </div>
+      </div>
+      <div class="rule-detail">
+        <span class="rule-patterns">${patterns}</span>
+        ${contains ? `<span class="rule-filter">${contains}</span>` : ''}
+        ${exclude ? `<span class="rule-filter exclude">${exclude}</span>` : ''}
+        ${r.size_gt ? `<span class="rule-filter size">size > ${r.size_gt}</span>` : ''}
+      </div>
+      <div class="rule-dest">→ ${dest}</div>
+    </div>`;
+  }).join('');
+
+  return `<!DOCTYPE html><html><head>
+<meta charset="utf-8">
+<title>Downloads | PracticeLife</title>
+<meta http-equiv="refresh" content="30">
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
+h1 { color:#00ff88; font-size:24px; margin-bottom:4px; }
+h2 { font-size:16px; margin:20px 0 10px 0; padding-bottom:6px; border-bottom:1px solid #222; }
+.subtitle { color:#666; font-size:12px; margin-bottom:16px; }
+
+.summary { display:flex; gap:12px; margin-bottom:20px; flex-wrap:wrap; }
+.scard { background:#151515; border:1px solid #222; border-radius:8px; padding:10px 16px; text-align:center; flex:1; min-width:100px; }
+.scard .num { font-size:28px; font-weight:bold; }
+.scard .label { color:#555; font-size:10px; text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
+.scard.daemon-on .num { color:#00ff88; }
+.scard.daemon-off .num { color:#ff4444; }
+
+.grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
+@media (max-width:1200px) { .grid { grid-template-columns:1fr; } }
+
+.panel { background:#111; border:1px solid #222; border-radius:10px; padding:16px; }
+.panel h2 { border:none; margin:0 0 12px 0; padding:0; }
+
+table { width:100%; border-collapse:collapse; font-size:12px; }
+th { text-align:left; color:#555; font-size:10px; text-transform:uppercase; letter-spacing:1px; padding:6px 8px; border-bottom:1px solid #222; }
+td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
+.filename { color:#ccc; max-width:250px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+.activity-item { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #1a1a1a; font-size:12px; }
+.activity-time { color:#555; font-size:11px; min-width:50px; }
+.activity-file { color:#ccc; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.activity-arrow { color:#00ff88; font-weight:bold; }
+.activity-dest { color:#888; font-size:11px; max-width:200px; overflow:hidden; text-overflow:ellipsis; }
+.activity-rule { color:#00aaff; font-size:10px; padding:2px 6px; background:#00aaff11; border-radius:3px; }
+
+.undo-btn { background:none; border:1px solid #333; color:#ffaa00; border-radius:4px; padding:2px 6px; cursor:pointer; font-size:11px; }
+.undo-btn:hover { background:#ffaa0022; border-color:#ffaa00; }
+
+.pin-btn { background:none; border:none; cursor:pointer; font-size:14px; opacity:0.3; }
+.pin-btn:hover, .pin-btn.pinned { opacity:1; }
+
+.dest-select { background:#0a0a0a; border:1px solid #333; color:#888; border-radius:4px; padding:2px 4px; font-size:11px; font-family:inherit; cursor:pointer; max-width:80px; }
+.dest-select:hover { border-color:#aa55ff; color:#e0e0e0; }
+.dest-select:focus { outline:none; border-color:#aa55ff; }
+
+.no-rule-item { display:flex; justify-content:space-between; align-items:center; padding:6px 0; border-bottom:1px solid #1a1a1a; font-size:12px; color:#ff4444; }
+.small-btn { background:none; border:1px solid #333; color:#00aaff; border-radius:4px; padding:2px 8px; cursor:pointer; font-size:11px; }
+.small-btn:hover { background:#00aaff22; border-color:#00aaff; }
+
+.rule-card { background:#0d0d0d; border:1px solid #222; border-radius:8px; padding:12px; margin-bottom:8px; }
+.rule-card.disabled { opacity:0.4; }
+.rule-header { display:flex; align-items:center; gap:8px; margin-bottom:6px; }
+.rule-num { color:#555; font-size:11px; min-width:24px; }
+.rule-name { color:#e0e0e0; font-size:13px; font-weight:bold; flex:1; }
+.rule-action { font-size:10px; padding:2px 6px; border-radius:3px; text-transform:uppercase; }
+.rule-action.move { color:#00ff88; background:#00ff8811; }
+.rule-action.copy { color:#00aaff; background:#00aaff11; }
+.rule-controls { display:flex; gap:4px; }
+.rule-controls button { background:none; border:1px solid #333; color:#888; border-radius:4px; padding:2px 6px; cursor:pointer; font-size:12px; }
+.rule-controls button:hover { color:#e0e0e0; border-color:#555; }
+.rule-detail { display:flex; flex-wrap:wrap; gap:6px; margin-bottom:4px; }
+.rule-patterns { color:#888; font-size:11px; }
+.rule-filter { color:#555; font-size:10px; padding:1px 6px; background:#1a1a1a; border-radius:3px; }
+.rule-filter.exclude { color:#ff4444; background:#ff444411; }
+.rule-filter.size { color:#ffaa00; background:#ffaa0011; }
+.rule-dest { color:#555; font-size:11px; margin-top:4px; }
+
+.add-rule-btn { display:block; width:100%; background:#151515; border:2px dashed #333; color:#555; padding:12px; border-radius:8px; cursor:pointer; font-size:13px; font-family:inherit; margin-top:8px; }
+.add-rule-btn:hover { border-color:#00ff88; color:#00ff88; }
+
+.modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:100; justify-content:center; align-items:center; }
+.modal-overlay.active { display:flex; }
+.modal { background:#151515; border:1px solid #333; border-radius:12px; padding:24px; width:500px; max-width:90vw; }
+.modal h3 { color:#00ff88; margin-bottom:16px; font-size:16px; }
+.modal label { display:block; color:#888; font-size:11px; margin-bottom:4px; margin-top:12px; text-transform:uppercase; letter-spacing:1px; }
+.modal input, .modal select { width:100%; background:#0a0a0a; border:1px solid #333; color:#e0e0e0; padding:8px 12px; border-radius:6px; font-family:inherit; font-size:13px; }
+.modal input:focus, .modal select:focus { outline:none; border-color:#00ff88; }
+.modal .modal-actions { display:flex; gap:8px; margin-top:20px; justify-content:flex-end; }
+.modal button { padding:8px 16px; border-radius:6px; border:1px solid #333; background:#1a1a1a; color:#e0e0e0; cursor:pointer; font-family:inherit; font-size:13px; }
+.modal button.primary { background:#00ff8822; border-color:#00ff88; color:#00ff88; }
+.modal button:hover { opacity:0.8; }
+
+.toast { position:fixed; bottom:20px; right:20px; background:#151515; border:1px solid #00ff88; color:#00ff88; padding:12px 20px; border-radius:8px; font-size:13px; z-index:200; display:none; }
+.toast.error { border-color:#ff4444; color:#ff4444; }
+.toast.active { display:block; animation: fadeIn 0.3s; }
+@keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
+
+.timestamp { color:#333; font-size:11px; text-align:right; margin-top:16px; }
+</style>
+</head><body>
+${renderNav('downloads')}
+<h1>Downloads Organizer</h1>
+<div class="subtitle">File routing daemon + Playwright bridge · Rules at ~/Downloads/.download-rules.json · Scans every 60s, moves after 5 min</div>
+
+<div class="summary">
+  <div class="scard ${data.stats.daemonRunning ? 'daemon-on' : 'daemon-off'}">
+    <div class="num">${data.stats.daemonRunning ? 'ON' : 'OFF'}</div>
+    <div class="label">Daemon</div>
+  </div>
+  <div class="scard"><div class="num" style="color:#ffaa00">${data.stats.totalPending}</div><div class="label">In Downloads</div></div>
+  <div class="scard"><div class="num" style="color:#00ff88">${data.stats.totalMoved}</div><div class="label">Moved (log)</div></div>
+  <div class="scard"><div class="num" style="color:#ff4444">${data.stats.totalNoRule}</div><div class="label">No Rule</div></div>
+  <div class="scard"><div class="num" style="color:#00aaff">${data.stats.totalRules}</div><div class="label">Rules</div></div>
+  <div class="scard"><div class="num" style="color:#aa55ff">${data.stats.totalCorrections}</div><div class="label">Corrections</div></div>
+  <div class="scard"><div class="num" style="color:#ff6600">${data.stats.playwrightBridged}</div><div class="label">PW Bridged</div></div>
+</div>
+
+<div class="grid">
+  <div class="panel">
+    <h2 style="color:#ffaa00">Pending Files (~/Downloads/)</h2>
+    <table>
+      <tr><th>File</th><th>Size</th><th>Countdown</th><th>Will Match</th><th></th></tr>
+      ${pendingRows || '<tr><td colspan="5" style="color:#555;text-align:center;padding:20px">Downloads folder is empty</td></tr>'}
+    </table>
+  </div>
+
+  <div class="panel">
+    <h2 style="color:#00ff88">Recent Activity</h2>
+    ${activityItems || '<div style="color:#555;text-align:center;padding:20px">No recent activity in log</div>'}
+    ${noRuleItems.length ? `<h2 style="color:#ff4444;margin-top:16px">Unmatched Files</h2>${noRuleHTML}` : ''}
+  </div>
+</div>
+
+<div style="margin-top:20px">
+  <h2 style="color:#00aaff">Routing Rules (first match wins)</h2>
+  ${rulesHTML}
+  <button class="add-rule-btn" onclick="showAddRule()">+ Add New Rule</button>
+</div>
+
+${data.corrections.length ? `<div style="margin-top:20px">
+  <h2 style="color:#aa55ff">Corrections Log (daemon learns from these)</h2>
+  <div style="color:#555;font-size:11px;margin-bottom:12px">Every redirect and manual sort is recorded. Patterns here will inform future rule suggestions.</div>
+  ${data.corrections.slice(0, 10).map(c => {
+    const time = new Date(c.timestamp).toLocaleString('en-US', { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' });
+    const shortFrom = (c.from || '').replace(process.env.HOME, '~');
+    const shortTo = (c.to || '').replace(process.env.HOME, '~');
+    return `<div style="display:flex;gap:8px;padding:6px 0;border-bottom:1px solid #1a1a1a;font-size:12px;align-items:center">
+      <span style="color:#555;min-width:90px">${time}</span>
+      <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.filename}</span>
+      <span style="color:#ff4444">${shortFrom}</span>
+      <span style="color:#aa55ff">→</span>
+      <span style="color:#00ff88">${shortTo}</span>
+    </div>`;
+  }).join('')}
+</div>` : ''}
+
+<div class="modal-overlay" id="ruleModal">
+  <div class="modal">
+    <h3 id="modalTitle">Add Rule</h3>
+    <input type="hidden" id="ruleIndex" value="-1">
+    <label>Rule Name</label>
+    <input id="ruleName" placeholder="e.g. Tax Documents">
+    <label>File Patterns (comma-separated globs)</label>
+    <input id="rulePatterns" placeholder="e.g. *.pdf, *.doc">
+    <label>Contains Keywords (optional, comma-separated)</label>
+    <input id="ruleContains" placeholder="e.g. tax, irs, w2">
+    <label>Exclude Keywords (optional)</label>
+    <input id="ruleExclude" placeholder="e.g. resume, cv">
+    <label>Destination</label>
+    <input id="ruleDest" placeholder="e.g. ~/Documents/Tax/">
+    <label>Action</label>
+    <select id="ruleAction"><option value="move">Move</option><option value="copy">Copy</option></select>
+    <div class="modal-actions">
+      <button onclick="closeModal()">Cancel</button>
+      <button class="primary" onclick="saveRule()">Save Rule</button>
+    </div>
+  </div>
+</div>
+
+<div class="toast" id="toast"></div>
+
+<div class="timestamp">${data.timestamp} · Auto-refresh 30s · Daemon rescans every 60s</div>
+
+<script>
+function toast(msg, isError) {
+  const t = document.getElementById('toast');
+  t.textContent = msg;
+  t.className = 'toast active' + (isError ? ' error' : '');
+  setTimeout(() => t.className = 'toast', 3000);
+}
+
+async function api(url, body) {
+  const r = await fetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+  return r.json();
+}
+
+async function redirectFile(filename, from, to) {
+  if (!to) return;
+  const r = await api('/api/downloads/redirect', { filename, from, to });
+  if (r.ok) { toast('Redirected: ' + filename + ' → ' + to.replace(/.*\\//, '').replace(/.*\\//, '')); setTimeout(() => location.reload(), 800); }
+  else toast(r.error, true);
+}
+
+async function sendTo(filename, to) {
+  if (!to) return;
+  const r = await api('/api/downloads/sendto', { filename, to });
+  if (r.ok) { toast('Sent: ' + filename); setTimeout(() => location.reload(), 800); }
+  else toast(r.error, true);
+}
+
+async function undoMove(filename, destination) {
+  if (!confirm('Move ' + filename + ' back to Downloads?')) return;
+  const r = await api('/api/downloads/undo', { filename, destination });
+  if (r.ok) { toast('Restored: ' + filename); setTimeout(() => location.reload(), 1000); }
+  else toast(r.error, true);
+}
+
+async function togglePin(filename) {
+  const r = await api('/api/downloads/pin', { filename });
+  if (r.ok) { toast(r.pinned ? 'Pinned: ' + filename : 'Unpinned: ' + filename); setTimeout(() => location.reload(), 500); }
+  else toast(r.error, true);
+}
+
+async function toggleRule(index) {
+  const r = await api('/api/downloads/rules', { action: 'toggle', index });
+  if (r.ok) { toast('Rule toggled'); setTimeout(() => location.reload(), 500); }
+  else toast(r.error, true);
+}
+
+async function deleteRule(index) {
+  if (!confirm('Delete this rule?')) return;
+  const r = await api('/api/downloads/rules', { action: 'delete', index });
+  if (r.ok) { toast('Rule deleted'); setTimeout(() => location.reload(), 500); }
+  else toast(r.error, true);
+}
+
+async function moveRule(from, to) {
+  const r = await api('/api/downloads/rules', { action: 'reorder', from, to });
+  if (r.ok) setTimeout(() => location.reload(), 300);
+}
+
+function showAddRule(filename) {
+  document.getElementById('ruleIndex').value = '-1';
+  document.getElementById('modalTitle').textContent = 'Add Rule';
+  document.getElementById('ruleName').value = '';
+  document.getElementById('rulePatterns').value = filename ? '*' + (filename.includes('.') ? '.' + filename.split('.').pop() : '') : '';
+  document.getElementById('ruleContains').value = '';
+  document.getElementById('ruleExclude').value = '';
+  document.getElementById('ruleDest').value = '';
+  document.getElementById('ruleAction').value = 'move';
+  document.getElementById('ruleModal').classList.add('active');
+}
+
+function showEditRule(index) {
+  const rules = ${JSON.stringify(data.rules)};
+  const r = rules[index];
+  document.getElementById('ruleIndex').value = index;
+  document.getElementById('modalTitle').textContent = 'Edit Rule: ' + r.name;
+  document.getElementById('ruleName').value = r.name || '';
+  document.getElementById('rulePatterns').value = (r.patterns || []).join(', ');
+  document.getElementById('ruleContains').value = (r.contains || []).join(', ');
+  document.getElementById('ruleExclude').value = (r.exclude || []).join(', ');
+  document.getElementById('ruleDest').value = r.destination || '';
+  document.getElementById('ruleAction').value = r.action || 'move';
+  document.getElementById('ruleModal').classList.add('active');
+}
+
+function closeModal() { document.getElementById('ruleModal').classList.remove('active'); }
+
+async function saveRule() {
+  const idx = parseInt(document.getElementById('ruleIndex').value);
+  const rule = {
+    name: document.getElementById('ruleName').value,
+    patterns: document.getElementById('rulePatterns').value.split(',').map(s => s.trim()).filter(Boolean),
+    destination: document.getElementById('ruleDest').value,
+    action: document.getElementById('ruleAction').value
+  };
+  const contains = document.getElementById('ruleContains').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (contains.length) rule.contains = contains;
+  const exclude = document.getElementById('ruleExclude').value.split(',').map(s => s.trim()).filter(Boolean);
+  if (exclude.length) rule.exclude = exclude;
+
+  if (!rule.name || !rule.patterns.length || !rule.destination) {
+    toast('Name, patterns, and destination are required', true);
+    return;
+  }
+
+  const action = idx >= 0 ? 'update' : 'add';
+  const body = idx >= 0 ? { action, index: idx, rule } : { action, rule };
+  const r = await api('/api/downloads/rules', body);
+  if (r.ok) { toast('Rule saved'); closeModal(); setTimeout(() => location.reload(), 500); }
+  else toast(r.error, true);
+}
+
+document.getElementById('ruleModal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('ruleModal')) closeModal();
+});
+</script>
+</body></html>`;
+}
+
 
