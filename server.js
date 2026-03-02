@@ -44,6 +44,13 @@ function getState() {
   const atlasTranscribed = (atlasStats.match(/Transcribed:\s+(\d+)/) || [])[1] || '0';
   const atlasPublished = (atlasStats.match(/Published:\s+(\d+)/) || [])[1] || '0';
 
+  // Philological pipeline stats
+  const ATLAS_DB = path.join(process.env.HOME, 'tools/memoryatlas/data/atlas.db');
+  const philoPolished = run(`sqlite3 "${ATLAS_DB}" "SELECT COUNT(*) FROM asset WHERE polished_at IS NOT NULL" 2>/dev/null`) || '0';
+  const philoTotal = run(`sqlite3 "${ATLAS_DB}" "SELECT COUNT(*) FROM asset WHERE transcript_lang <> 'en' AND transcript_lang IS NOT NULL AND transcript_status = 'done'" 2>/dev/null`) || '0';
+  const philoLangs = run(`sqlite3 "${ATLAS_DB}" "SELECT GROUP_CONCAT(DISTINCT transcript_lang) FROM asset WHERE transcript_lang <> 'en' AND transcript_lang IS NOT NULL AND transcript_status = 'done'" 2>/dev/null`) || '';
+  const philoRunning = run(`ps aux | grep 'polish' | grep -v grep | wc -l 2>/dev/null`).trim() !== '0';
+
   // Session logs
   const SESSION_LOGS = path.join(process.env.HOME, '.claude/session-logs');
   let sessionLogs = [];
@@ -61,6 +68,9 @@ function getState() {
   const promptBrowserLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 https://127.0.0.1:3002/api/stats 2>/dev/null') === '200';
   const contactVerifyLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 https://127.0.0.1:3003/ 2>/dev/null') === '200';
   const downloadDaemonLive = run('launchctl list | grep -q download-daemon && echo "1" || echo "0"', 1000) === '1';
+  const litellmLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:4000/health/readiness 2>/dev/null') === '200';
+  const ollamaLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:11434/api/tags 2>/dev/null') === '200';
+  const langfuseLive = run('curl -s -o /dev/null -w "%{http_code}" --max-time 1 http://127.0.0.1:3005 2>/dev/null') === '200';
 
   // Parse all session logs for instance history
   let instances = [];
@@ -174,9 +184,10 @@ function getState() {
     system: { diskUsage, uptime: uptime.replace(/.*up/, 'up'), volumes: volumes.split('\n') },
     downloads: { total: downloads, organized_folders: downloadsOrg, loose_files: downloadsLoose },
     memoryatlas: { total: atlasTotal, hours: atlasHours, transcribed: atlasTranscribed, published: atlasPublished },
+    philological: { polished: philoPolished, total: philoTotal, languages: philoLangs, running: philoRunning },
     vault: { total_notes: obsidianFiles, home_updated: homeUpdated },
     calendar: { events: calEvents, fetched: calFetched },
-    agents: { sessionLogs, protocolActive: protocolExists, apiLive, promptBrowserLive, contactVerifyLive, downloadDaemonLive, workers, handoffs, promptTotal, promptSessions, instances },
+    agents: { sessionLogs, protocolActive: protocolExists, apiLive, promptBrowserLive, contactVerifyLive, downloadDaemonLive, litellmLive, ollamaLive, langfuseLive, workers, handoffs, promptTotal, promptSessions, instances },
     wallet,
   };
 }
@@ -409,16 +420,21 @@ function workerStatusColor(dotCls) {
 function renderNav(activePage = 'dashboard') {
   const pages = [
     { path: '/', name: 'Dashboard', key: 'dashboard' },
-    { path: '/blockers', name: '🚧 Blockers', key: 'blockers' },
+    { path: '/command', name: 'Command', key: 'command' },
+    { path: '/machines', name: 'Machines', key: 'machines' },
+    { path: '/briefing', name: 'Briefing', key: 'briefing' },
+    { path: '/blockers', name: 'Convergence', key: 'blockers' },
     { path: '/agents', name: 'Agents', key: 'agents' },
-    { path: '/endpoints', name: 'API', key: 'endpoints' },
+    { path: '/threads', name: 'Threads', key: 'threads' },
+    { path: '/fleet', name: 'Fleet', key: 'fleet' },
+    { path: '/stream', name: 'Life Stream', key: 'stream' },
     { path: '/deps', name: 'Dependencies', key: 'deps' },
     { path: '/plan', name: 'Plan Tracker', key: 'plan' },
-    { path: '/stream', name: 'Life Stream', key: 'stream' },
-    { path: '/threads', name: 'Threads', key: 'threads' },
-    { path: '/prompts', name: '🚀 Prompts', key: 'prompts' },
-    { path: '/search', name: '🔍 Search', key: 'search' },
-    { path: '/cheatsheet', name: '📋 Cheatsheet', key: 'cheatsheet' },
+    { path: '/endpoints', name: 'API', key: 'endpoints' },
+    { path: '/philological', name: 'Philological', key: 'philological' },
+    { path: '/prompts', name: 'Prompts', key: 'prompts' },
+    { path: '/search', name: 'Search', key: 'search' },
+    { path: '/cheatsheet', name: 'Cheatsheet', key: 'cheatsheet' },
   ];
 
   return `<div class="nav" style="display:flex;gap:16px;margin-bottom:12px">\n` +
@@ -584,6 +600,11 @@ ${renderNav('dashboard')}
     <div class="value" id="v-atlas">${state.memoryatlas.total}</div>
     <div class="sub">${state.memoryatlas.hours}h recorded / ${state.memoryatlas.transcribed} transcribed</div>
   </div>
+  <div class="card" style="border-left:3px solid ${state.philological.running ? '#ffaa00' : parseInt(state.philological.polished) === parseInt(state.philological.total) ? '#00ff88' : '#555'}">
+    <h3><a href="/philological" style="color:inherit;text-decoration:none">Philological</a></h3>
+    <div class="value">${state.philological.polished}/${state.philological.total}</div>
+    <div class="sub">${state.philological.running ? '🔄 polishing...' : 'restored + translated'} · ${state.philological.languages || 'none'}</div>
+  </div>
   <div class="card clickable" data-metric="downloads" data-label="Downloads">
     <h3>Downloads</h3>
     <div class="value" id="v-downloads">${state.downloads.loose_files}</div>
@@ -723,6 +744,9 @@ ${renderNav('dashboard')}
       <div class="agent-status"><span class="dot ${state.agents.promptBrowserLive ? 'live' : 'down'}"></span> <a href="https://localhost:3002" style="color:#e0e0e0">Prompt Browser</a> <span style="color:#555">:3002</span></div>
       <div class="agent-status"><span class="dot ${state.agents.contactVerifyLive ? 'live' : 'down'}"></span> <a href="https://localhost:3003" style="color:#e0e0e0">Contact Verify</a> <span style="color:#555">:3003</span></div>
       <div class="agent-status"><span class="dot ${state.agents.downloadDaemonLive ? 'live' : 'down'}"></span> Download Daemon <span style="color:#555">(bg)</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.litellmLive ? 'live' : 'down'}"></span> <a href="http://localhost:4000" style="color:#e0e0e0">LiteLLM Gateway</a> <span style="color:#555">:4000</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.ollamaLive ? 'live' : 'down'}"></span> <a href="http://localhost:11434" style="color:#e0e0e0">Ollama</a> <span style="color:#555">:11434</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.langfuseLive ? 'live' : 'down'}"></span> <a href="http://localhost:3005" style="color:#e0e0e0">Langfuse</a> <span style="color:#555">:3005</span></div>
       <div class="agent-status"><span class="dot ${state.agents.protocolActive ? 'live' : 'off'}"></span> Agent Protocol</div>
       <div style="margin-top:8px;color:#555;font-size:11px">${state.agents.promptTotal} prompts · ${state.agents.promptSessions} sessions</div>
     </div>
@@ -1036,6 +1060,311 @@ ${renderNav('dashboard')}
 })();
 </script>
 
+</body></html>`;
+}
+
+// ─── Philological Pipeline Page ──────────────────────────────────────
+
+function getPhilologicalData() {
+  const ATLAS_DB = path.join(process.env.HOME, 'tools/memoryatlas/data/atlas.db');
+  const polished = parseInt(run(`sqlite3 "${ATLAS_DB}" "SELECT COUNT(*) FROM asset WHERE polished_at IS NOT NULL" 2>/dev/null`)) || 0;
+  const totalNonEn = parseInt(run(`sqlite3 "${ATLAS_DB}" "SELECT COUNT(*) FROM asset WHERE transcript_lang <> 'en' AND transcript_lang IS NOT NULL AND transcript_status = 'done'" 2>/dev/null`)) || 0;
+  const isRunning = run(`ps aux | grep 'polish' | grep -v grep | wc -l 2>/dev/null`).trim() !== '0';
+
+  // Language breakdown
+  let langBreakdown = [];
+  try {
+    const langRows = run(`sqlite3 -json "${ATLAS_DB}" "SELECT transcript_lang as lang, COUNT(*) as total, SUM(CASE WHEN polished_at IS NOT NULL THEN 1 ELSE 0 END) as polished, ROUND(SUM(duration_sec)/60.0, 1) as minutes FROM asset WHERE transcript_lang <> 'en' AND transcript_lang IS NOT NULL AND transcript_status = 'done' GROUP BY transcript_lang ORDER BY total DESC" 2>/dev/null`, 5000);
+    if (langRows && langRows.startsWith('[')) langBreakdown = JSON.parse(langRows);
+  } catch {}
+
+  // Recent polished samples (last 5)
+  let recentSamples = [];
+  try {
+    const samplesRaw = run(`sqlite3 -json "${ATLAS_DB}" "SELECT title, transcript_lang, ROUND(duration_sec/60.0, 1) as minutes, polished_at, SUBSTR(translated_text, 1, 300) as translation_preview, SUBSTR(restored_text, 1, 300) as restored_preview FROM asset WHERE polished_at IS NOT NULL ORDER BY polished_at DESC LIMIT 5" 2>/dev/null`, 5000);
+    if (samplesRaw && samplesRaw.startsWith('[')) recentSamples = JSON.parse(samplesRaw);
+  } catch {}
+
+  // Remaining to polish
+  let remaining = [];
+  try {
+    const remainRaw = run(`sqlite3 -json "${ATLAS_DB}" "SELECT title, transcript_lang, ROUND(duration_sec/60.0, 1) as minutes FROM asset WHERE transcript_lang <> 'en' AND transcript_lang IS NOT NULL AND transcript_status = 'done' AND polished_at IS NULL ORDER BY duration_sec DESC LIMIT 10" 2>/dev/null`, 5000);
+    if (remainRaw && remainRaw.startsWith('[')) remaining = JSON.parse(remainRaw);
+  } catch {}
+
+  // Total hours by status
+  const totalHoursPolished = parseFloat(run(`sqlite3 "${ATLAS_DB}" "SELECT ROUND(SUM(duration_sec)/3600.0, 1) FROM asset WHERE polished_at IS NOT NULL" 2>/dev/null`)) || 0;
+  const totalHoursRemaining = parseFloat(run(`sqlite3 "${ATLAS_DB}" "SELECT ROUND(SUM(duration_sec)/3600.0, 1) FROM asset WHERE transcript_lang <> 'en' AND transcript_lang IS NOT NULL AND transcript_status = 'done' AND polished_at IS NULL" 2>/dev/null`)) || 0;
+
+  return {
+    polished, total: totalNonEn, running: isRunning,
+    pct: totalNonEn > 0 ? Math.round(polished / totalNonEn * 100) : 0,
+    hoursPolished: totalHoursPolished, hoursRemaining: totalHoursRemaining,
+    langBreakdown, recentSamples, remaining,
+  };
+}
+
+function renderPhilologicalHTML() {
+  const data = getPhilologicalData();
+  const LANG_NAMES = { ru: 'Russian', ja: 'Japanese', ko: 'Korean', tr: 'Turkish', pt: 'Portuguese', is: 'Icelandic', zh: 'Chinese', de: 'German', fr: 'French' };
+  const pct = data.pct;
+  const barColor = data.running ? '#ffaa00' : pct === 100 ? '#00ff88' : '#4488ff';
+
+  const langCards = data.langBreakdown.map(l => {
+    const name = LANG_NAMES[l.lang] || l.lang;
+    const lPct = l.total > 0 ? Math.round(l.polished / l.total * 100) : 0;
+    const flag = { ru: '\u{1F1F7}\u{1F1FA}', ja: '\u{1F1EF}\u{1F1F5}', ko: '\u{1F1F0}\u{1F1F7}', tr: '\u{1F1F9}\u{1F1F7}', pt: '\u{1F1E7}\u{1F1F7}', is: '\u{1F1EE}\u{1F1F8}' }[l.lang] || '\u{1F310}';
+    return `<div style="background:#111;border:1px solid #222;border-radius:8px;padding:16px;min-width:140px">
+      <div style="font-size:24px;margin-bottom:4px">${flag}</div>
+      <div style="font-size:18px;font-weight:bold;color:#eee">${name}</div>
+      <div style="font-size:28px;font-weight:bold;color:${lPct===100?'#00ff88':'#4488ff'}">${l.polished}/${l.total}</div>
+      <div style="font-size:12px;color:#888">${l.minutes} min · ${lPct}%</div>
+      <div style="background:#222;border-radius:4px;height:4px;margin-top:8px">
+        <div style="background:${lPct===100?'#00ff88':'#4488ff'};height:4px;border-radius:4px;width:${lPct}%"></div>
+      </div>
+    </div>`;
+  }).join('\n');
+
+  const sampleCards = data.recentSamples.map(s => {
+    const tPreview = (s.translation_preview || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    const rPreview = (s.restored_preview || '').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+    return `<div style="background:#111;border:1px solid #222;border-radius:8px;padding:16px;margin-bottom:12px">
+      <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:8px">
+        <span style="font-weight:bold;color:#eee">${(s.title || '').replace(/</g, '&lt;')}</span>
+        <span style="font-size:12px;color:#666">${s.transcript_lang} · ${s.minutes}min · ${s.polished_at ? s.polished_at.slice(0, 16) : ''}</span>
+      </div>
+      <div style="background:#0a1628;border-left:3px solid #4488ff;padding:12px;border-radius:4px;margin-bottom:8px">
+        <div style="font-size:11px;color:#4488ff;margin-bottom:4px;font-weight:bold">TRANSLATION</div>
+        <div style="font-size:13px;color:#ccc;line-height:1.5">${tPreview}${tPreview.length >= 295 ? '...' : ''}</div>
+      </div>
+      <div style="background:#1a0a0a;border-left:3px solid #ff6644;padding:12px;border-radius:4px">
+        <div style="font-size:11px;color:#ff6644;margin-bottom:4px;font-weight:bold">RESTORED SOURCE</div>
+        <div style="font-size:13px;color:#aaa;line-height:1.5">${rPreview}${rPreview.length >= 295 ? '...' : ''}</div>
+      </div>
+    </div>`;
+  }).join('\n');
+
+  const remainingRows = data.remaining.map(r =>
+    `<tr><td style="color:#eee">${(r.title || '').replace(/</g, '&lt;')}</td><td style="color:#888">${r.transcript_lang}</td><td style="text-align:right;color:#666">${r.minutes}min</td></tr>`
+  ).join('\n');
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Philological Pipeline</title>
+<style>
+  body { font-family: 'SF Mono', 'Menlo', monospace; background: #0a0a0a; color: #ccc; margin: 0; padding: 20px; }
+  a { color: #00ff88; }
+</style></head><body>
+${renderNav('philological')}
+<h1 style="color:#eee;margin-bottom:4px">\u{1F4DC} Philological Pipeline</h1>
+<p style="color:#666;margin-top:0;font-size:13px">Source restoration + literary translation \u2014 not transcription, resurrection.</p>
+
+<div style="display:flex;gap:24px;align-items:center;margin:20px 0;padding:20px;background:#111;border-radius:8px;border:1px solid #222">
+  <div>
+    <div style="font-size:48px;font-weight:bold;color:${barColor}">${data.polished}<span style="font-size:24px;color:#555">/${data.total}</span></div>
+    <div style="font-size:13px;color:#888">${data.running ? '\u{1F7E1} Pipeline running...' : pct === 100 ? '\u2705 All polished' : '\u23F8 Idle'}</div>
+  </div>
+  <div style="flex:1">
+    <div style="background:#222;border-radius:6px;height:20px;overflow:hidden">
+      <div style="background:${barColor};height:20px;border-radius:6px;width:${pct}%;transition:width 0.5s;display:flex;align-items:center;justify-content:center">
+        <span style="font-size:11px;font-weight:bold;color:#000">${pct}%</span>
+      </div>
+    </div>
+    <div style="display:flex;justify-content:space-between;margin-top:6px;font-size:12px;color:#666">
+      <span>${data.hoursPolished}h polished</span>
+      <span>${data.hoursRemaining}h remaining</span>
+      <span>${(data.hoursPolished + data.hoursRemaining).toFixed(1)}h total</span>
+    </div>
+  </div>
+</div>
+
+<h2 style="color:#888;font-size:16px;margin-top:28px">Languages</h2>
+<div style="display:flex;gap:12px;flex-wrap:wrap">${langCards}</div>
+
+<h2 style="color:#888;font-size:16px;margin-top:28px">Recent Translations</h2>
+${sampleCards || '<div style="color:#555">No polished transcripts yet.</div>'}
+
+${data.remaining.length > 0 ? `
+<h2 style="color:#888;font-size:16px;margin-top:28px">Queue (${data.total - data.polished} remaining)</h2>
+<table style="width:100%;font-size:13px;border-collapse:collapse">
+  <tr style="border-bottom:1px solid #222"><th style="text-align:left;color:#555;padding:6px 0">Title</th><th style="color:#555">Lang</th><th style="text-align:right;color:#555">Duration</th></tr>
+  ${remainingRows}
+</table>
+` : ''}
+
+<div style="margin-top:32px;padding:16px;background:#0a1628;border-radius:8px;border:1px solid #1a3a6a">
+  <h3 style="color:#4488ff;margin-top:0">The Principle</h3>
+  <p style="color:#888;font-size:13px;line-height:1.6;margin-bottom:0">
+    Peretz has an MPhil in Literature and a PhD in Biology. His father taught at Cornell in the building where Nabokov worked.
+    The voice memos contain 675 hours of life \u2014 family stories, scientific discussions, immigration narratives, poetic observations.<br><br>
+    Whisper transcribes accurately but flatly. It captures phonemes, not meaning.
+    The philological pipeline restores meaning \u2014 first in the language it was spoken, then in the language it will be read.<br><br>
+    <em style="color:#aaa">This is not a feature. It is an act of care.</em>
+  </p>
+</div>
+
+<div style="margin-top:16px;font-size:12px;color:#333">
+  Auto-refresh 30s \u00B7 <a href="/api/philological" style="color:#333">JSON</a> \u00B7 Model: qwen2.5:32b (local) \u00B7 Pipeline: <code>atlas polish</code>
+</div>
+<script>setInterval(async()=>{try{const r=await fetch('/philological');const h=await r.text();document.open();document.write(h);document.close()}catch{}},30000);</script>
+</body></html>`;
+}
+
+// ─── Daily Briefing / Eisenhower Matrix ──────────────────────────────
+
+const TASKS_FILE = path.join(process.env.HOME, '.claude/TASKS.md');
+
+function getBriefingData() {
+  let tasksContent = '';
+  try { tasksContent = fs.readFileSync(TASKS_FILE, 'utf8'); } catch { return { quadrants: [], services: [], generated: new Date().toISOString() }; }
+
+  // Parse tasks into structured items
+  const items = [];
+  const lines = tasksContent.split('\n');
+  let currentSection = '';
+  let currentTask = null;
+
+  for (const line of lines) {
+    // Section headers
+    if (line.startsWith('## Active — Peretz')) { currentSection = 'peretz'; continue; }
+    if (line.startsWith('## Active — Claude')) { currentSection = 'claude'; continue; }
+    if (line.startsWith('## Simmering')) { currentSection = 'simmering'; continue; }
+    if (line.startsWith('## Recently Completed')) { currentSection = 'done'; continue; }
+    if (line.startsWith('## Services')) { currentSection = 'services'; continue; }
+
+    // Task titles (### headers)
+    const taskMatch = line.match(/^### (.+)/);
+    if (taskMatch && currentSection !== 'done' && currentSection !== 'services') {
+      if (currentTask) items.push(currentTask);
+      const title = taskMatch[1].replace(/[🚨⚡🔴]/g, '').trim();
+      currentTask = { title, section: currentSection, priority: 'P2', owner: '', details: [], status: '', time: '' };
+      continue;
+    }
+
+    // Parse metadata line: **Priority**: P1 | **Added**: ... | **Owner**: ... | **Time**: 5 min
+    if (currentTask && line.includes('**Priority**')) {
+      const p = line.match(/P(\d)/);
+      if (p) currentTask.priority = 'P' + p[1];
+      const ownerMatch = line.match(/\*\*Owner\*\*:\s*([^|]+)/);
+      if (ownerMatch) currentTask.owner = ownerMatch[1].trim();
+      const timeMatch = line.match(/\*\*Time\*\*:\s*([^|]+)/);
+      if (timeMatch) currentTask.time = timeMatch[1].trim();
+      const statusMatch = line.match(/\*\*Status\*\*:\s*([^|]+)/);
+      if (statusMatch) currentTask.status = statusMatch[1].trim();
+      continue;
+    }
+    if (currentTask && line.startsWith('- ')) {
+      currentTask.details.push(line.replace(/^- /, '').trim());
+    }
+    // Simmering items are bullet points, not ### headers
+    if (currentSection === 'simmering' && line.startsWith('- **')) {
+      const simMatch = line.match(/- \*\*(.+?)\*\*/);
+      if (simMatch) {
+        if (currentTask) items.push(currentTask);
+        currentTask = { title: simMatch[1], section: 'simmering', priority: 'P3', owner: '', details: [line.replace(/^- \*\*.+?\*\*:?\s*/, '')], status: '', time: '' };
+      }
+    }
+  }
+  if (currentTask) items.push(currentTask);
+
+  // Eisenhower classification
+  // Urgent + Important (DO): P0, P1 with "Peretz" owner
+  // Important not Urgent (SCHEDULE): P1 Claude, P2 with clear value
+  // Urgent not Important (DELEGATE): quick tasks, <15 min
+  // Neither (DROP/SIMMER): simmering items
+  const q1 = []; // Urgent + Important — DO NOW
+  const q2 = []; // Important + Not Urgent — SCHEDULE
+  const q3 = []; // Urgent + Not Important — DELEGATE
+  const q4 = []; // Neither — LATER
+
+  for (const item of items) {
+    if (item.section === 'simmering') { q4.push(item); continue; }
+    const isQuick = item.time && parseInt(item.time) <= 15;
+
+    if (isQuick) { q3.push(item); }
+    else if (item.priority === 'P0') { q1.push(item); }
+    else if (item.priority === 'P1' && item.owner.toLowerCase().includes('peretz')) { q1.push(item); }
+    else if (item.priority === 'P1') { q2.push(item); }
+    else { q2.push(item); }
+  }
+
+  // Service status
+  const services = [];
+  const svcSection = tasksContent.split('## Services Status')[1];
+  if (svcSection) {
+    const svcLines = svcSection.split('\n').filter(l => l.startsWith('- '));
+    for (const l of svcLines) {
+      const match = l.match(/- (.+?):\s*(.+)/);
+      if (match) services.push({ name: match[1], url: match[2].trim() });
+    }
+  }
+
+  return {
+    quadrants: [
+      { name: 'DO NOW', emoji: '🔴', desc: 'Urgent + Important', items: q1 },
+      { name: 'SCHEDULE', emoji: '🟡', desc: 'Important, Not Urgent', items: q2 },
+      { name: 'QUICK WINS', emoji: '⚡', desc: 'Under 15 min', items: q3 },
+      { name: 'LATER', emoji: '🔵', desc: 'Simmering', items: q4 },
+    ],
+    services,
+    totalTasks: items.length,
+    generated: new Date().toISOString(),
+  };
+}
+
+function renderBriefingHTML() {
+  const data = getBriefingData();
+  const today = new Date();
+  const dateStr = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
+
+  const renderItem = (item) => {
+    const badge = item.priority === 'P0' ? '<span style="background:#e74c3c;padding:2px 6px;border-radius:3px;font-size:11px">P0</span>'
+      : item.priority === 'P1' ? '<span style="background:#e67e22;padding:2px 6px;border-radius:3px;font-size:11px">P1</span>'
+      : '<span style="background:#3498db;padding:2px 6px;border-radius:3px;font-size:11px">P2</span>';
+    const owner = item.owner ? `<span style="color:#888;font-size:12px"> — ${item.owner}</span>` : '';
+    const time = item.time ? `<span style="color:#2ecc71;font-size:12px"> (${item.time})</span>` : '';
+    const detail = item.details.length > 0 ? `<div style="color:#999;font-size:12px;margin:2px 0 0 16px">${item.details[0]}</div>` : '';
+    return `<div style="margin:6px 0;padding:6px 8px;background:#1a1a2e;border-radius:4px">${badge} ${item.title}${owner}${time}${detail}</div>`;
+  };
+
+  const quadrantHTML = data.quadrants.map(q => `
+    <div style="flex:1;min-width:300px;margin:8px;padding:12px;background:#0d1117;border:1px solid #30363d;border-radius:8px">
+      <h3 style="margin:0 0 8px 0;color:#e6e6e6">${q.emoji} ${q.name} <span style="color:#666;font-size:13px">— ${q.desc}</span></h3>
+      ${q.items.length === 0 ? '<div style="color:#555;font-style:italic;padding:8px">Clear</div>' : q.items.map(renderItem).join('')}
+    </div>
+  `).join('');
+
+  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Daily Briefing</title>
+<meta http-equiv="refresh" content="300">
+<style>
+  body { background:#0a0a1a; color:#e6e6e6; font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif; margin:0; padding:20px; }
+  a { color:#58a6ff; text-decoration:none; }
+  a:hover { text-decoration:underline; }
+</style></head><body>
+${renderNav('briefing')}
+<div style="max-width:1200px;margin:0 auto">
+  <h1 style="margin:16px 0 4px 0">Daily Briefing</h1>
+  <div style="color:#888;margin-bottom:16px">${dateStr} — ${data.totalTasks} active tasks</div>
+
+  <div style="display:flex;flex-wrap:wrap;margin:-8px">
+    ${quadrantHTML}
+  </div>
+
+  <div style="margin-top:24px;padding:16px;background:#0d1117;border:1px solid #30363d;border-radius:8px">
+    <h3 style="margin:0 0 8px 0">Quick Links</h3>
+    <div style="display:flex;flex-wrap:wrap;gap:12px">
+      <a href="/">Dashboard</a>
+      <a href="/threads">Threads</a>
+      <a href="/stream">Life Stream</a>
+      <a href="/agents">Agents</a>
+      <a href="/plan">Plan Tracker</a>
+      <a href="https://localhost:3001/health" target="_blank">API Health</a>
+      <a href="https://localhost:3002" target="_blank">Prompt Browser</a>
+    </div>
+  </div>
+
+  <div style="margin-top:12px;color:#555;font-size:12px">
+    Generated ${data.generated} — Source: ~/.claude/TASKS.md — Auto-refresh 5min
+  </div>
+</div>
 </body></html>`;
 }
 
@@ -1369,6 +1698,25 @@ function probeAllStreams() {
     }
   } catch(e) { log.push({ t: now, msg: `MemoryAtlas \u2014 ${e.message}` }); }
 
+  // ─── Philological Pipeline ────────────────
+  try {
+    const ATLAS_DB = path.join(HOME, 'tools/memoryatlas/data/atlas.db');
+    const polished = parseInt(run(`sqlite3 "${ATLAS_DB}" "SELECT COUNT(*) FROM asset WHERE polished_at IS NOT NULL" 2>/dev/null`)) || 0;
+    const totalNonEn = parseInt(run(`sqlite3 "${ATLAS_DB}" "SELECT COUNT(*) FROM asset WHERE transcript_lang <> 'en' AND transcript_lang IS NOT NULL AND transcript_status = 'done'" 2>/dev/null`)) || 0;
+    const langs = run(`sqlite3 "${ATLAS_DB}" "SELECT GROUP_CONCAT(DISTINCT transcript_lang) FROM asset WHERE transcript_lang <> 'en' AND transcript_lang IS NOT NULL AND transcript_status = 'done'" 2>/dev/null`) || '';
+    const isRunning = run(`ps aux | grep 'polish' | grep -v grep | wc -l 2>/dev/null`).trim() !== '0';
+    const pct = totalNonEn > 0 ? Math.round(polished / totalNonEn * 100) : 0;
+    if (totalNonEn > 0) {
+      streams.push({
+        id: 'philological', domain: 'memory', valence: isRunning ? 'active' : 'growth', cadence: 'daily',
+        icon: '\u{1F4DC}', label: 'Philological Pipeline',
+        primary: `${polished}/${totalNonEn}`, secondary: `${pct}% polished \u00B7 ${langs} \u00B7 ${isRunning ? 'RUNNING' : 'idle'}`,
+        count: polished, signal: pct === 100 ? 'strong' : pct > 50 ? 'medium' : 'weak',
+      });
+      log.push({ t: now, msg: `Philological \u2014 ${polished}/${totalNonEn} polished (${pct}%), langs: ${langs}${isRunning ? ' [ACTIVE]' : ''}` });
+    }
+  } catch(e) { log.push({ t: now, msg: `Philological \u2014 ${e.message}` }); }
+
   // ─── Obsidian Vault ─────────────────────
   try {
     const noteCount = parseInt(run(`find "${VAULT}" -name "*.md" | wc -l`)) || 0;
@@ -1504,6 +1852,25 @@ function probeAllStreams() {
       log.push({ t: now, msg: `Health \u2014 ${items.join(', ')}` });
     }
   } catch(e) { log.push({ t: now, msg: `Health \u2014 ${e.message}` }); }
+
+  // ─── Anvil (M3 Ultra) ──────────────────
+  try {
+    const anvilTags = run('curl -s --max-time 3 http://192.168.1.105:11434/api/tags 2>/dev/null');
+    if (anvilTags && anvilTags !== '—') {
+      const anvilData = JSON.parse(anvilTags);
+      const modelCount = (anvilData.models || []).length;
+      const totalSize = (anvilData.models || []).reduce((s, m) => s + (m.size || 0), 0);
+      const sizeGB = (totalSize / 1e9).toFixed(0);
+      streams.push({
+        id: 'anvil', domain: 'orbit', valence: 'pulse', cadence: 'realtime',
+        icon: '\u{2692}\u{FE0F}', label: 'Anvil (M3 Ultra)',
+        primary: `${modelCount} models`, secondary: `${sizeGB} GB loaded`,
+        tertiary: '192.168.1.105 \u00B7 96GB \u00B7 Ollama',
+        count: modelCount, signal: modelCount > 0 ? 'strong' : 'weak',
+      });
+      log.push({ t: now, msg: `Anvil \u2014 ${modelCount} models (${sizeGB}GB) on M3 Ultra` });
+    }
+  } catch(e) { log.push({ t: now, msg: `Anvil \u2014 ${e.message}` }); }
 
   // ─── System ─────────────────────────────
   try {
@@ -1851,214 +2218,201 @@ ${renderNav('threads')}
 // ─── Blockers (Peretz-only) ──────────────────────────────────────────
 
 function getBlockers() {
-  // Blockers that only Peretz can unblock
-  // Each has: item, blocker, instructions, impact (1-10), unlocks array
-  const blockers = [
-    {
-      item: 'Time Machine Backup',
-      blocker: 'Need to configure Elements-Ready drive in System Preferences',
-      impact: 9,
-      unlocks: ['User Account Merge', 'Safe system upgrades', 'Data recovery safety net', 'Ability to test risky operations'],
-      instructions: [
-        'Open System Settings → General → Time Machine',
-        'Click "+" to add backup disk',
-        'Select "Elements-Ready" from the list',
-        'Click "Set Up Disk"',
-        'Choose encryption preference (recommended: encrypted)',
-        'First backup will start automatically (may take several hours)',
-      ],
-    },
-    // ✅ COMPLETED 2026-02-20: LinkedIn MCP authenticated, session saved to ~/.linkedin-mcp-profile/
-    // {
-    //   item: 'LinkedIn MCP Manual Login',
-    //   blocker: 'Need to log into LinkedIn via Claude Desktop browser once',
-    //   impact: 7,
-    //   unlocks: ['Contact Dedup enrichment (716 T1 people)', 'LinkedIn profile data mining', 'Professional network mapping', 'Automated connection tracking'],
-    // },
-    {
-      item: 'Google Takeout (Location History)',
-      blocker: 'Need to request Location History export from Google',
-      impact: 6,
-      unlocks: ['MemoryAtlas Phase 4 (location enrichment)', 'Travel timeline reconstruction', 'Location-based memory triggers', 'Geocoded voice memos'],
-      instructions: [
-        'Go to takeout.google.com',
-        'Deselect all products',
-        'Select only "Location History"',
-        'Choose file format: JSON',
-        'Click "Next step" → "Create export"',
-        'Wait for email notification (may take hours/days)',
-        'Download archive when ready',
-        'Extract to ~/Downloads/ or external drive',
-      ],
-    },
-    {
-      item: 'Cursor Privacy Mode Decision',
-      blocker: 'Need to decide whether to enable Cursor Privacy Mode',
-      impact: 5,
-      unlocks: ['Secure coding in Cursor', 'Safe work on sensitive codebases', 'Peace of mind with proprietary code'],
-      instructions: [
-        'Open Cursor Settings',
-        'Navigate to Privacy section',
-        'Review Privacy Mode options:',
-        '  - Disables telemetry',
-        '  - Disables code snippets sent to Cursor servers',
-        '  - May reduce some AI features',
-        'Toggle Privacy Mode ON or OFF based on preference',
-        'Document decision in ~/CURSOR-ROLE-STRATEGY.md',
-      ],
-    },
-    {
-      item: 'VPN Home Access Setup',
-      blocker: 'Need router admin credentials and port forwarding setup',
-      impact: 8,
-      unlocks: ['Remote access to localhost services', 'Work from anywhere', 'Access Life Stream remotely', 'Secure tunnel to home network'],
-      instructions: [
-        'Find router IP (usually 192.168.1.1)',
-        'Locate router admin credentials (on router label or password manager)',
-        'Log into router admin panel',
-        'Enable port forwarding for VPN (e.g., WireGuard port 51820)',
-        'Set up dynamic DNS (or note static IP)',
-        'Install Tailscale or WireGuard on Mac Studio',
-        'Configure VPN client on remote devices',
-        'Test connection from external network',
-      ],
-    },
-    {
-      item: 'Password Merge (Chrome → Apple)',
-      blocker: 'Need to decrypt Chrome password vault on SD4Loco and import',
-      impact: 4,
-      unlocks: ['Unified password management', 'iCloud Keychain sync across devices', 'Auto-fill on iPhone/iPad', 'Decommission Chrome vault'],
-      instructions: [
-        'Open Chrome on Mac Studio',
-        'Go to chrome://settings/passwords',
-        'Click "Export passwords" (requires Mac password)',
-        'Save CSV to secure location (e.g., ~/Documents/temp-passwords.csv)',
-        'Open Safari → Preferences → Passwords',
-        'Click "..." menu → Import Passwords',
-        'Select the exported CSV file',
-        'Verify import success',
-        'Securely delete CSV file (rm + empty trash)',
-      ],
-    },
-    {
-      item: 'Domain Strategy (3 domains)',
-      blocker: 'Need to decide hosting/deployment strategy for tolerableinsanity.com, jalalagood.com, peretzpartensky.com',
-      impact: 6,
-      unlocks: ['Public web presence (L4 Digital Self)', 'Professional portfolio', 'Personal brand', 'Shareable work showcase'],
-      instructions: [
-        'Review current domain status (registrar, expiration)',
-        'Decide content strategy for each domain:',
-        '  - peretzpartensky.com: professional portfolio?',
-        '  - tolerableinsanity.com: blog/writing?',
-        '  - jalalagood.com: project showcase?',
-        'Choose hosting platform (Vercel, Netlify, GitHub Pages)',
-        'Point DNS to chosen platform',
-        'Deploy initial content or placeholder',
-        'Document strategy in vault/Efforts/Active/Digital Self.md',
-      ],
-    },
-  ];
+  // Dynamically parse TASKS.md for Peretz-blocked items and agent-ready items
+  const tasksPath = path.join(process.env.HOME, '.claude/TASKS.md');
+  let tasksContent = '';
+  try { tasksContent = fs.readFileSync(tasksPath, 'utf8'); } catch { return { peretz: [], agent: [], completed: [], simmering: [] }; }
 
-  // Sort by impact (highest first)
-  return blockers.sort((a, b) => b.impact - a.impact);
+  const sections = {
+    peretz: [],   // Blocked on Peretz
+    agent: [],    // Claude can execute
+    completed: [],// Recently done
+    simmering: [],// Future
+  };
+
+  let currentSection = null;
+  let currentTask = null;
+  const lines = tasksContent.split('\n');
+
+  for (const line of lines) {
+    // Detect section headers
+    if (line.startsWith('## Active — Peretz')) { currentSection = 'peretz'; continue; }
+    if (line.startsWith('## Active — Claude')) { currentSection = 'agent'; continue; }
+    if (line.startsWith('## Recently Completed') || line.startsWith('## Completed')) { currentSection = 'completed'; continue; }
+    if (line.startsWith('## Simmering')) { currentSection = 'simmering'; continue; }
+    if (line.startsWith('## Services')) { currentSection = null; continue; }
+
+    if (!currentSection) continue;
+
+    // Task title (### heading)
+    if (line.startsWith('### ')) {
+      if (currentTask) sections[currentSection].push(currentTask);
+      const title = line.replace(/^###\s+/, '').replace(/[🚨✅⚠️🔥]/g, '').trim();
+      const isDone = line.includes('DONE') || line.includes('ARRIVED') || line.includes('COMPLETE');
+      currentTask = { title, priority: 'P2', details: [], isDone };
+      continue;
+    }
+
+    // Completed section uses bullet points
+    if (currentSection === 'completed' && line.match(/^-\s+✅/)) {
+      sections.completed.push({ title: line.replace(/^-\s+✅\s*/, '').trim(), isDone: true });
+      continue;
+    }
+    if (currentSection === 'simmering' && line.match(/^-\s+\*\*/)) {
+      sections.simmering.push({ title: line.replace(/^-\s+\*\*/, '').replace(/\*\*.*/, '').trim() });
+      continue;
+    }
+
+    if (currentTask && line.startsWith('**Priority**:')) {
+      const pm = line.match(/P(\d)/);
+      if (pm) currentTask.priority = 'P' + pm[1];
+      const om = line.match(/Owner.*?:\s*(.+?)(\s*\||\s*$)/);
+      if (om) currentTask.owner = om[1].trim();
+      const tm = line.match(/Time.*?:\s*(.+?)(\s*\||\s*$)/);
+      if (tm) currentTask.time = tm[1].trim();
+      continue;
+    }
+    if (currentTask && line.startsWith('- ')) {
+      currentTask.details.push(line.replace(/^-\s+/, '').trim());
+    }
+  }
+  if (currentTask && currentSection) sections[currentSection].push(currentTask);
+
+  // Filter out completed items from peretz section
+  sections.peretz = sections.peretz.filter(t => !t.isDone);
+
+  return sections;
 }
 
 function renderBlockersHTML() {
-  const blockers = getBlockers();
-  const totalImpact = blockers.reduce((sum, b) => sum + b.impact, 0);
-  const avgImpact = (totalImpact / blockers.length).toFixed(1);
+  const data = getBlockers();
+  const peretzCount = data.peretz.length;
+  const agentCount = data.agent.length;
+  const completedCount = data.completed.length;
+  const simmeringCount = data.simmering.length;
+  const total = peretzCount + agentCount + simmeringCount;
+  const convergence = total > 0 ? Math.round((completedCount / (completedCount + total)) * 100) : 100;
 
-  const blockerCards = blockers.map((b, i) => {
-    const impactColor = b.impact >= 8 ? '#ff4444' : b.impact >= 6 ? '#ffaa00' : '#00aaff';
-    const unlocksList = b.unlocks.map(u => `<li>${u}</li>`).join('');
-    const instructionsList = b.instructions.map(s => `<li>${s}</li>`).join('');
+  const priorityColor = p => p === 'P0' ? '#ff4444' : p === 'P1' ? '#ffaa00' : p === 'P2' ? '#00aaff' : '#555';
+  const priorityLabel = p => p === 'P0' ? 'CRITICAL' : p === 'P1' ? 'HIGH' : p === 'P2' ? 'MEDIUM' : 'LOW';
 
-    return `<details class="blocker-card" style="border-left:4px solid ${impactColor}">
-  <summary class="blocker-summary">
-    <div class="blocker-header">
-      <span class="blocker-rank">#${i + 1}</span>
-      <span class="blocker-item">${b.item}</span>
-      <span class="blocker-impact" style="background:${impactColor}22;color:${impactColor}">Impact: ${b.impact}/10</span>
+  const renderTask = (t, i, section) => {
+    const pc = priorityColor(t.priority || 'P2');
+    const detailsHTML = (t.details || []).map(d => `<li>${d}</li>`).join('');
+    const ownerTag = t.owner ? `<span style="color:#888;font-size:11px;margin-left:8px">${t.owner}</span>` : '';
+    const timeTag = t.time ? `<span style="color:#00ff88;font-size:11px;margin-left:8px">${t.time}</span>` : '';
+    return `<details class="task-card" style="border-left:4px solid ${pc}">
+  <summary class="task-summary">
+    <div class="task-header">
+      <span class="task-priority" style="background:${pc}22;color:${pc}">${t.priority || 'P2'}</span>
+      <span class="task-title">${t.title}</span>
+      ${ownerTag}${timeTag}
     </div>
-    <div class="blocker-desc">${b.blocker}</div>
   </summary>
-  <div class="blocker-content">
-    <div class="blocker-section">
-      <h4>🔓 This Unlocks:</h4>
-      <ul class="blocker-list unlocks">${unlocksList}</ul>
-      <div class="unlock-count">${b.unlocks.length} downstream items</div>
-    </div>
-    <div class="blocker-section">
-      <h4>📋 How to Unblock (Peretz):</h4>
-      <ol class="blocker-instructions">${instructionsList}</ol>
-    </div>
-  </div>
+  ${detailsHTML ? `<div class="task-details"><ul>${detailsHTML}</ul></div>` : ''}
 </details>`;
-  }).join('');
+  };
+
+  const peretzCards = data.peretz.map((t, i) => renderTask(t, i, 'peretz')).join('');
+  const agentCards = data.agent.map((t, i) => renderTask(t, i, 'agent')).join('');
+  const simmeringList = data.simmering.map(t => `<li>${t.title}</li>`).join('');
+  const completedList = data.completed.slice(0, 10).map(t => `<li style="color:#555">${t.title}</li>`).join('');
 
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
-<title>🚧 Blockers | PracticeLife</title>
+<title>Convergence | PracticeLife</title>
 <meta http-equiv="refresh" content="60">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
 h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
+h2 { font-size:18px; margin:24px 0 12px 0; padding-bottom:8px; border-bottom:1px solid #222; }
 .subtitle { color:#666; margin-bottom:20px; font-size:13px; }
 
-.summary { display:flex; gap:16px; margin-bottom:24px; }
-.scard { background:#151515; border:1px solid #222; border-radius:8px; padding:12px 20px; text-align:center; flex:1; }
-.scard .num { font-size:32px; font-weight:bold; color:#ff4444; }
+.summary { display:flex; gap:16px; margin-bottom:24px; flex-wrap:wrap; }
+.scard { background:#151515; border:1px solid #222; border-radius:8px; padding:12px 20px; text-align:center; flex:1; min-width:120px; }
+.scard .num { font-size:32px; font-weight:bold; }
 .scard .label { color:#555; font-size:11px; text-transform:uppercase; letter-spacing:1px; margin-top:4px; }
-.scard.impact .num { color:#ffaa00; }
-.scard.unlocks .num { color:#00aaff; }
 
-.blocker-card { background:#111; border-radius:8px; padding:0; margin-bottom:16px; overflow:hidden; }
-.blocker-summary { list-style:none; padding:20px; cursor:pointer; user-select:none; }
-.blocker-summary::-webkit-details-marker { display:none; }
-.blocker-summary::before { content:'▶'; display:inline-block; margin-right:12px; transition:transform 0.2s; color:#555; }
-details[open] .blocker-summary::before { transform:rotate(90deg); }
+.convergence-bar { background:#151515; border:1px solid #222; border-radius:8px; padding:16px 20px; margin-bottom:24px; }
+.convergence-bar .bar-bg { background:#1a1a1a; border-radius:4px; height:24px; overflow:hidden; margin-top:8px; }
+.convergence-bar .bar-fill { height:100%; border-radius:4px; transition:width 0.5s; display:flex; align-items:center; justify-content:center; font-size:11px; font-weight:bold; }
+.convergence-bar .label { color:#888; font-size:13px; }
 
-.blocker-header { display:flex; align-items:center; gap:12px; margin-bottom:8px; }
-.blocker-rank { font-size:20px; font-weight:bold; color:#333; min-width:40px; }
-.blocker-item { font-size:16px; font-weight:bold; color:#e0e0e0; flex:1; }
-.blocker-impact { font-size:11px; font-weight:bold; padding:4px 12px; border-radius:6px; white-space:nowrap; }
-.blocker-desc { color:#999; font-size:13px; line-height:1.5; margin-left:52px; }
+.task-card { background:#111; border-radius:8px; padding:0; margin-bottom:8px; overflow:hidden; }
+.task-summary { list-style:none; padding:14px 20px; cursor:pointer; user-select:none; }
+.task-summary::-webkit-details-marker { display:none; }
+.task-header { display:flex; align-items:center; gap:12px; }
+.task-priority { font-size:10px; font-weight:bold; padding:3px 10px; border-radius:4px; white-space:nowrap; text-transform:uppercase; letter-spacing:1px; }
+.task-title { font-size:14px; color:#e0e0e0; flex:1; }
+.task-details { padding:0 20px 14px 20px; border-top:1px solid #1a1a1a; margin-top:0; padding-top:12px; }
+.task-details ul { margin-left:16px; color:#999; font-size:12px; line-height:1.8; }
 
-.blocker-content { padding:0 20px 20px 20px; border-top:1px solid #1a1a1a; margin-top:12px; padding-top:16px; }
-.blocker-section { margin-bottom:20px; }
-.blocker-section:last-child { margin-bottom:0; }
-.blocker-section h4 { color:#00aaff; font-size:13px; margin-bottom:8px; text-transform:uppercase; letter-spacing:1px; }
-.blocker-list { margin-left:20px; color:#aaa; font-size:13px; line-height:1.8; }
-.blocker-list.unlocks li { color:#00ff88; }
-.blocker-instructions { margin-left:20px; color:#ddd; font-size:13px; line-height:1.8; }
-.blocker-instructions li { margin-bottom:6px; }
-.unlock-count { color:#555; font-size:11px; margin-top:8px; margin-left:20px; }
+.section-agent h2 { color:#00aaff; }
+.section-peretz h2 { color:#ff4444; }
+.section-simmering h2 { color:#555; }
+.section-completed h2 { color:#00ff88; }
+
+.simmering-list, .completed-list { margin-left:20px; font-size:12px; line-height:2; color:#888; }
+.completed-list { color:#555; }
 
 .timestamp { color:#333; font-size:11px; text-align:right; margin-top:24px; }
+.source { color:#333; font-size:11px; margin-top:8px; }
 </style>
 </head><body>
 ${renderNav('blockers')}
-<h1>🚧 Blockers (Peretz-Only)</h1>
-<div class="subtitle">Ranked by estimated impact value · Click to expand instructions</div>
+<h1>Phase-Lock Convergence</h1>
+<div class="subtitle">Live from ~/.claude/TASKS.md · Where Peretz is needed vs what agents handle</div>
 
-<div class="summary">
-  <div class="scard">
-    <div class="num">${blockers.length}</div>
-    <div class="label">Active Blockers</div>
-  </div>
-  <div class="scard impact">
-    <div class="num">${avgImpact}</div>
-    <div class="label">Avg Impact</div>
-  </div>
-  <div class="scard unlocks">
-    <div class="num">${blockers.reduce((sum, b) => sum + b.unlocks.length, 0)}</div>
-    <div class="label">Items Blocked</div>
+<div class="convergence-bar">
+  <div class="label">Convergence: ${completedCount} done / ${completedCount + total} total threads</div>
+  <div class="bar-bg">
+    <div class="bar-fill" style="width:${convergence}%;background:${convergence > 70 ? '#00ff88' : convergence > 40 ? '#ffaa00' : '#ff4444'}">
+      ${convergence}%
+    </div>
   </div>
 </div>
 
-${blockerCards}
+<div class="summary">
+  <div class="scard">
+    <div class="num" style="color:#ff4444">${peretzCount}</div>
+    <div class="label">Blocked on Peretz</div>
+  </div>
+  <div class="scard">
+    <div class="num" style="color:#00aaff">${agentCount}</div>
+    <div class="label">Agent Can Execute</div>
+  </div>
+  <div class="scard">
+    <div class="num" style="color:#00ff88">${completedCount}</div>
+    <div class="label">Completed</div>
+  </div>
+  <div class="scard">
+    <div class="num" style="color:#555">${simmeringCount}</div>
+    <div class="label">Simmering</div>
+  </div>
+</div>
 
+<div class="section-peretz">
+  <h2>Blocked on Peretz (${peretzCount})</h2>
+  ${peretzCards || '<div style="color:#555;padding:12px">No blockers! All clear.</div>'}
+</div>
+
+<div class="section-agent">
+  <h2>Agent Can Execute Now (${agentCount})</h2>
+  ${agentCards || '<div style="color:#555;padding:12px">No ready tasks.</div>'}
+</div>
+
+<div class="section-completed">
+  <h2>Recently Completed (${completedCount})</h2>
+  <ul class="completed-list">${completedList || '<li>None yet</li>'}</ul>
+</div>
+
+<div class="section-simmering">
+  <h2>Simmering / Future (${simmeringCount})</h2>
+  <ul class="simmering-list">${simmeringList || '<li>None</li>'}</ul>
+</div>
+
+<div class="source">Source: ~/.claude/TASKS.md · Updated by agents continuously</div>
 <div class="timestamp">Last refresh: ${new Date().toLocaleString()}</div>
 </body></html>`;
 }
@@ -2078,6 +2432,46 @@ const server = https.createServer(sslOptions, (req, res) => {
     recordHistory(state);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(state, null, 2));
+    return;
+  }
+  if (req.url === '/command') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderCommandHTML());
+    return;
+  }
+  if (req.url === '/api/command') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(getCommandData(), null, 2));
+    return;
+  }
+  if (req.url === '/machines') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderMachinesHTML());
+    return;
+  }
+  if (req.url === '/api/machines') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(getMachineStatus(), null, 2));
+    return;
+  }
+  if (req.url === '/philological') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderPhilologicalHTML());
+    return;
+  }
+  if (req.url === '/api/philological') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(getPhilologicalData(), null, 2));
+    return;
+  }
+  if (req.url === '/briefing') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderBriefingHTML());
+    return;
+  }
+  if (req.url === '/api/briefing') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(getBriefingData(), null, 2));
     return;
   }
   if (req.url === '/plan') {
@@ -2163,7 +2557,30 @@ const server = https.createServer(sslOptions, (req, res) => {
     res.end(JSON.stringify(blockers, null, 2));
     return;
   }
-  if (req.url === '/cheatsheet') {
+  if (req.url === '/fleet') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderFleetHTML());
+    return;
+  }
+  if (req.url === '/usage') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderUsageHTML());
+    return;
+  }
+  if (req.url === '/api/usage') {
+    try {
+      const UsageTracker = require(path.join(process.env.HOME, '.claude/usage-tracker.js'));
+      const tracker = new UsageTracker();
+      const stats = tracker.getTodayStats();
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(stats, null, 2));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+  if (req.url === '/cheatsheet' || req.url === '/docs') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(renderCheatsheetHTML());
     return;
@@ -2218,7 +2635,415 @@ const server = https.createServer(sslOptions, (req, res) => {
   res.end(renderHTML(state));
 });
 
+// ─── Fleet Page — Multi-Machine Status ───────────────────────────────
+
+function renderFleetHTML() {
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<title>Fleet — PracticeLife OS</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; padding: 20px; }
+  h1 { color: #00ff88; font-size: 24px; margin-bottom: 4px; }
+  .subtitle { color: #666; font-size: 12px; margin-bottom: 20px; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; margin-bottom: 24px; }
+  .machine { background: #151515; border: 1px solid #222; border-radius: 12px; padding: 20px; position: relative; }
+  .machine.primary { border-color: #00ff8855; }
+  .machine.inference { border-color: #00aaff55; }
+  .machine.storage { border-color: #ffaa0055; }
+  .machine.mobile { border-color: #aa55ff55; }
+  .machine h2 { font-size: 18px; margin-bottom: 4px; display: flex; align-items: center; gap: 8px; }
+  .machine .role { color: #888; font-size: 11px; margin-bottom: 12px; }
+  .machine .specs { color: #555; font-size: 11px; margin-bottom: 8px; }
+  .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
+  .dot.up { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+  .dot.down { background: #ff4444; box-shadow: 0 0 8px #ff4444; }
+  .dot.offline { background: #555; }
+  .services { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+  .svc { font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid #333; }
+  .svc.up { background: #0a1a0a; color: #00ff88; border-color: #00ff8833; }
+  .svc.down { background: #1a0a0a; color: #ff4444; border-color: #ff444433; }
+  .models { margin: 8px 0; }
+  .model { font-size: 12px; padding: 4px 0; color: #ccc; display: flex; justify-content: space-between; }
+  .model .size { color: #555; }
+  .section { margin-top: 24px; }
+  .section h2 { color: #00ff88; font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #222; padding-bottom: 8px; }
+  .routes { margin: 12px 0; }
+  .route { font-size: 12px; padding: 4px 10px; display: flex; justify-content: space-between; border-bottom: 1px solid #111; }
+  .route .name { color: #00aaff; }
+  .route .target { color: #555; }
+  .flow { background: #111; border-radius: 8px; padding: 12px; margin: 12px 0; font-size: 12px; line-height: 1.8; }
+  .flow .arrow { color: #00ff88; }
+  .mesh { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
+  .device { font-size: 11px; padding: 4px 10px; border-radius: 4px; border: 1px solid #333; display: flex; align-items: center; gap: 6px; }
+  .device.online { border-color: #00ff8833; }
+  .device.offline { border-color: #55555533; opacity: 0.5; }
+  .latency { color: #00ff88; font-size: 11px; }
+  .loading { color: #555; font-style: italic; }
+  .error { color: #ff4444; }
+  .capabilities { font-size: 11px; color: #888; line-height: 1.6; padding-left: 12px; }
+  .capabilities li { margin: 2px 0; }
+  .refresh { position: fixed; bottom: 20px; right: 20px; background: #151515; border: 1px solid #333; color: #00ff88; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 12px; }
+  .refresh:hover { border-color: #00ff88; }
+  .stat { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
+  .stat .label { color: #888; }
+  .stat .val { color: #00ff88; }
+  .nav { display: flex; gap: 16px; margin-bottom: 12px; }
+  .nav a { color: #555; font-size: 13px; padding: 4px 12px; border: 1px solid #222; border-radius: 6px; text-decoration: none; }
+  .nav a.active { color: #00ff88; border-color: #00ff88; }
+</style>
+</head><body>
+${renderNav('fleet')}
+<h1>Fleet Status</h1>
+<p class="subtitle">Multi-machine AI infrastructure — live probe</p>
+
+<div id="fleet-content"><p class="loading">Probing fleet...</p></div>
+
+<button class="refresh" onclick="loadFleet()">Refresh</button>
+
+<script>
+async function loadFleet() {
+  const el = document.getElementById('fleet-content');
+  try {
+    const res = await fetch('https://localhost:3001/api/fleet');
+    const d = await res.json();
+    el.innerHTML = renderFleet(d);
+  } catch (e) {
+    el.innerHTML = '<p class="error">Failed to reach API at :3001 — ' + e.message + '</p>';
+  }
+}
+
+function renderFleet(d) {
+  const h = d.machines.hearth;
+  const a = d.machines.anvil;
+  const n = d.machines.nas;
+  const mob = d.machines.mobile;
+  const r = d.routing;
+  const ts = d.tailscale;
+
+  const svcHtml = (services) => Object.entries(services).map(([k, v]) =>
+    '<span class="svc ' + v.status + '">' + k + ' :' + v.port + (v.latencyMs ? ' (' + v.latencyMs + 'ms)' : '') + '</span>'
+  ).join('');
+
+  const modelHtml = (models) => models.map(m =>
+    '<div class="model"><span>' + m.name + '</span><span class="size">' + m.size + '</span></div>'
+  ).join('');
+
+  const deviceHtml = (devices) => devices.map(dev =>
+    '<div class="device ' + (dev.online ? 'online' : 'offline') + '">' +
+    '<span class="dot ' + (dev.online ? 'up' : 'offline') + '"></span>' +
+    dev.name + ' <span style="color:#555">' + (dev.ip || '') + '</span></div>'
+  ).join('');
+
+  let html = '<div class="grid">';
+
+  // Hearth
+  html += '<div class="machine primary"><h2><span class="dot up"></span> ' + h.name + '</h2>';
+  html += '<div class="role">' + h.role + '</div>';
+  html += '<div class="specs">' + h.model + ' — ' + h.specs.ram + ' RAM, ' + h.specs.cpu + ' CPU, ' + h.specs.gpu + ' GPU</div>';
+  if (h.system) {
+    html += '<div class="stat"><span class="label">Load</span><span class="val">' + h.system.loadAvg.map(v => v.toFixed(1)).join(' / ') + '</span></div>';
+    html += '<div class="stat"><span class="label">Free RAM</span><span class="val">' + h.system.freeMemGB + 'GB / ' + h.system.totalMemGB + 'GB</span></div>';
+  }
+  html += '<div style="margin-top:8px;font-size:11px;color:#888">Services</div>';
+  html += '<div class="services">' + svcHtml(h.services) + '</div>';
+  if (h.models.length > 0) {
+    html += '<div style="font-size:11px;color:#888;margin-top:8px">Local Models</div>';
+    html += '<div class="models">' + modelHtml(h.models) + '</div>';
+  }
+  html += '</div>';
+
+  // Anvil
+  const anvilUp = a.ollama.status === 'up';
+  html += '<div class="machine inference"><h2><span class="dot ' + (anvilUp ? 'up' : 'down') + '"></span> ' + a.name + '</h2>';
+  html += '<div class="role">' + a.role + '</div>';
+  html += '<div class="specs">' + a.model + ' — ' + a.specs.ram + ' RAM, ' + a.specs.cpu + ' CPU, ' + a.specs.gpu + ' GPU, ' + a.specs.bandwidth + '</div>';
+  html += '<div class="stat"><span class="label">LAN</span><span class="val">' + a.ip.lan + ' <span class="latency">(' + a.connectivity.lan.latencyMs + 'ms)</span></span></div>';
+  html += '<div class="stat"><span class="label">Tailscale</span><span class="val">' + a.ip.tailscale + ' <span class="latency">(' + a.connectivity.tailscale.latencyMs + 'ms)</span></span></div>';
+  if (a.system) {
+    html += '<div class="stat"><span class="label">Uptime</span><span class="val">' + a.system.uptime + '</span></div>';
+  }
+  html += '<div style="font-size:11px;color:#888;margin-top:8px">Ollama Models (' + a.ollama.totalSizeGB + 'GB)</div>';
+  html += '<div class="models">' + modelHtml(a.ollama.models) + '</div>';
+  html += '</div>';
+
+  // NAS
+  html += '<div class="machine storage"><h2><span class="dot up"></span> ' + n.name + '</h2>';
+  html += '<div class="role">' + n.role + '</div>';
+  html += '<div class="specs">' + n.specs.ram + ' RAM, ' + n.specs.storage + ' storage, ' + n.specs.arch + '</div>';
+  html += '<div class="stat"><span class="label">LAN</span><span class="val">' + n.ip.lan + '</span></div>';
+  html += '<div class="stat"><span class="label">Tailscale</span><span class="val">' + n.ip.tailscale + '</span></div>';
+  html += '<div class="services">' + n.services.map(s => '<span class="svc up">' + s + '</span>').join('') + '</div>';
+  html += '</div>';
+
+  // Mobile
+  html += '<div class="machine mobile"><h2>Mobile Devices</h2>';
+  html += '<div style="margin-bottom:12px"><strong style="color:#aa55ff">' + mob.ipad.name + '</strong>';
+  html += '<div class="role">' + mob.ipad.role + '</div>';
+  html += '<ul class="capabilities">' + mob.ipad.capabilities.map(c => '<li>' + c + '</li>').join('') + '</ul></div>';
+  html += '<div><strong style="color:#aa55ff">' + mob.iphone.name + '</strong>';
+  html += '<div class="role">' + mob.iphone.role + '</div>';
+  html += '<ul class="capabilities">' + mob.iphone.capabilities.map(c => '<li>' + c + '</li>').join('') + '</ul></div>';
+  html += '</div>';
+
+  html += '</div>'; // end grid
+
+  // Routing
+  html += '<div class="section"><h2>AI Routing (LiteLLM :4000)</h2>';
+  html += '<div class="routes">';
+  r.litellm.models.forEach(m => {
+    const target = m.startsWith('anvil/') ? 'Anvil :11434' : m.startsWith('local/') ? 'Hearth :11434' : m.startsWith('gpu/') ? 'GPU Box' : 'Cloud';
+    html += '<div class="route"><span class="name">' + m + '</span><span class="target">' + target + '</span></div>';
+  });
+  html += '</div>';
+  html += '<div class="flow">';
+  r.flowDescription.forEach(f => {
+    html += f.replace(/→/g, '<span class="arrow"> → </span>') + '<br>';
+  });
+  html += '</div></div>';
+
+  // Tailscale Mesh
+  html += '<div class="section"><h2>Tailscale Mesh (' + ts.meshSize + ' devices)</h2>';
+  html += '<div class="mesh">' + deviceHtml(ts.devices) + '</div></div>';
+
+  // Timestamp
+  html += '<p style="color:#333;font-size:11px;margin-top:24px">Probed ' + new Date(d.timestamp).toLocaleString() + '</p>';
+
+  return html;
+}
+
+loadFleet();
+setInterval(loadFleet, 30000);
+</script>
+</body></html>`;
+}
+
 // ─── Cheat Sheet Page ─────────────────────────────────────────────────
+
+function renderUsageHTML() {
+  try {
+    const UsageTracker = require(path.join(process.env.HOME, '.claude/usage-tracker.js'));
+    const tracker = new UsageTracker();
+    const stats = tracker.getTodayStats();
+    const { summary, calls, topConsumers } = stats;
+
+    const burnRate = (summary.burnRate * 100).toFixed(1);
+    const remaining = (summary.remaining / 1000000).toFixed(2);
+    const remainingPct = ((summary.remaining / summary.totalQuota) * 100).toFixed(0);
+
+    let statusEmoji = '⚠️';
+    let statusText = 'UNDERUTILIZED';
+    if (summary.burnRate >= 0.95) {
+      statusEmoji = '✅';
+      statusText = 'EXCELLENT';
+    } else if (summary.burnRate >= 0.80) {
+      statusEmoji = '✓';
+      statusText = 'GOOD';
+    }
+
+    const callsHTML = calls.map(c => `
+      <tr>
+        <td>${c.category}</td>
+        <td>${(c.tokens / 1000).toFixed(0)}k</td>
+        <td>$${c.cost.toFixed(2)}</td>
+        <td>${c.call_count}</td>
+        <td>${((c.tokens / summary.totalBurned) * 100).toFixed(0)}%</td>
+      </tr>
+    `).join('');
+
+    const consumersHTML = topConsumers.map((item, i) => `
+      <tr>
+        <td>${i + 1}</td>
+        <td>${item.purpose}</td>
+        <td>${(item.tokens / 1000).toFixed(0)}k</td>
+        <td>$${item.cost.toFixed(2)}</td>
+        <td>${item.calls}</td>
+      </tr>
+    `).join('');
+
+    return `<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta http-equiv="refresh" content="60">
+  <title>Usage Tracker — ${stats.date}</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body {
+      background: #0a0a0a;
+      color: #e0e0e0;
+      font-family: 'SF Mono', Monaco, 'Cascadia Code', monospace;
+      padding: 20px;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+    .container { max-width: 1200px; margin: 0 auto; }
+    h1 {
+      font-size: 24px;
+      margin-bottom: 20px;
+      color: #00ff88;
+      font-weight: 600;
+    }
+    .summary {
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .metric {
+      display: flex;
+      justify-content: space-between;
+      padding: 8px 0;
+      border-bottom: 1px solid #222;
+    }
+    .metric:last-child { border-bottom: none; }
+    .metric-label { color: #888; }
+    .metric-value { color: #00ff88; font-weight: 600; }
+    .status {
+      font-size: 18px;
+      padding: 12px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      text-align: center;
+      margin-bottom: 20px;
+    }
+    .status.excellent { border-color: #00ff88; color: #00ff88; }
+    .status.good { border-color: #ffaa00; color: #ffaa00; }
+    .status.underutilized { border-color: #ff3366; color: #ff3366; }
+    .progress-bar {
+      width: 100%;
+      height: 30px;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      overflow: hidden;
+      margin: 20px 0;
+    }
+    .progress-fill {
+      height: 100%;
+      background: linear-gradient(90deg, #00ff88, #00cc66);
+      transition: width 0.5s ease;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      color: #0a0a0a;
+      font-weight: 600;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #1a1a1a;
+      border: 1px solid #333;
+      border-radius: 8px;
+      overflow: hidden;
+      margin-bottom: 20px;
+    }
+    th {
+      background: #222;
+      color: #00ff88;
+      padding: 12px;
+      text-align: left;
+      font-weight: 600;
+    }
+    td {
+      padding: 10px 12px;
+      border-top: 1px solid #222;
+    }
+    tr:hover { background: #1f1f1f; }
+    .section-title {
+      font-size: 18px;
+      color: #00ff88;
+      margin: 30px 0 15px;
+    }
+    a { color: #00ff88; text-decoration: none; }
+    a:hover { text-decoration: underline; }
+    .footer {
+      text-align: center;
+      padding: 20px;
+      color: #555;
+      font-size: 12px;
+    }
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>🔥 Quota Burn Tracker — ${stats.date}</h1>
+
+    <div class="status ${summary.burnRate >= 0.95 ? 'excellent' : summary.burnRate >= 0.80 ? 'good' : 'underutilized'}">
+      ${statusEmoji} STATUS: ${statusText} — ${burnRate}% UTILIZED
+    </div>
+
+    <div class="progress-bar">
+      <div class="progress-fill" style="width: ${burnRate}%">
+        ${burnRate}%
+      </div>
+    </div>
+
+    <div class="summary">
+      <div class="metric">
+        <span class="metric-label">Tokens Burned</span>
+        <span class="metric-value">${(summary.totalBurned / 1000000).toFixed(2)}M / ${(summary.totalQuota / 1000000).toFixed(1)}M</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Cost</span>
+        <span class="metric-value">$${summary.totalCost.toFixed(2)} / $${summary.totalBudget.toFixed(2)}</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Remaining</span>
+        <span class="metric-value">${remaining}M tokens ($${summary.remainingCost.toFixed(2)})</span>
+      </div>
+      <div class="metric">
+        <span class="metric-label">Remaining %</span>
+        <span class="metric-value">${remainingPct}% LEFT ON TABLE</span>
+      </div>
+    </div>
+
+    <h2 class="section-title">Allocation Breakdown</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>Category</th>
+          <th>Tokens</th>
+          <th>Cost</th>
+          <th>Calls</th>
+          <th>% of Total</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${callsHTML || '<tr><td colspan="5">No API calls yet today</td></tr>'}
+      </tbody>
+    </table>
+
+    <h2 class="section-title">Top Consumers</h2>
+    <table>
+      <thead>
+        <tr>
+          <th>#</th>
+          <th>Purpose</th>
+          <th>Tokens</th>
+          <th>Cost</th>
+          <th>Calls</th>
+        </tr>
+      </thead>
+      <tbody>
+        ${consumersHTML || '<tr><td colspan="5">No consumers yet</td></tr>'}
+      </tbody>
+    </table>
+
+    <div class="footer">
+      <a href="/">← Back to Dashboard</a> | <a href="/api/usage">JSON API</a> | Auto-refresh: 60s
+    </div>
+  </div>
+</body>
+</html>`;
+  } catch (e) {
+    return `<html><body><h1>Error</h1><pre>${e.message}\n${e.stack}</pre></body></html>`;
+  }
+}
 
 function renderCheatsheetHTML() {
   const cheatsheet = fs.readFileSync(path.join(process.env.HOME, '.claude/CHEAT-SHEET.md'), 'utf8');
@@ -2502,15 +3327,19 @@ function renderEndpointsHTML() {
       endpoints: [
         { method: 'GET', path: '/', desc: 'Main dashboard with system metrics' },
         { method: 'GET', path: '/agents', desc: 'Agent collaboration status' },
+        { method: 'GET', path: '/briefing', desc: 'Daily Briefing - Eisenhower priority matrix' },
         { method: 'GET', path: '/stream', desc: 'Life Stream - 15 data source probes' },
         { method: 'GET', path: '/threads', desc: 'Active threads from MEMORY.md' },
+        { method: 'GET', path: '/philological', desc: 'Philological pipeline - source restoration + literary translation' },
         { method: 'GET', path: '/plan', desc: 'Plan execution tracker' },
         { method: 'GET', path: '/deps', desc: 'Dependency graph (blockers)' },
         { method: 'GET', path: '/endpoints', desc: 'This page - all endpoints index' },
         { method: 'GET', path: '/api/state', desc: 'JSON: System state snapshot' },
+        { method: 'GET', path: '/api/briefing', desc: 'JSON: Daily briefing Eisenhower matrix' },
         { method: 'GET', path: '/api/stream', desc: 'JSON: Life Stream data' },
         { method: 'GET', path: '/api/threads', desc: 'JSON: Active threads' },
         { method: 'GET', path: '/api/agents', desc: 'JSON: Agent collaboration data' },
+        { method: 'GET', path: '/api/philological', desc: 'JSON: Philological pipeline data' },
         { method: 'GET', path: '/api/plan', desc: 'JSON: Plan execution state' },
         { method: 'GET', path: '/api/deps', desc: 'JSON: Dependencies and blockers' },
         { method: 'GET', path: '/api/history', desc: 'JSON: Historical metrics' },
@@ -3243,3 +4072,323 @@ function renderTasksHTML() {
     return `<!DOCTYPE html><html><body><h1>Error loading tasks</h1><pre>${e.message}</pre></body></html>`;
   }
 }
+
+// ─── Command Page — Where Peretz Is Needed ─────────────────────────────
+
+function getCommandData() {
+  const tasksFile = path.join(process.env.HOME, '.claude/TASKS.md');
+  let tasksContent = '';
+  try { tasksContent = fs.readFileSync(tasksFile, 'utf-8'); } catch { }
+
+  // Parse Peretz-blocked tasks from TASKS.md
+  const peretzSection = tasksContent.split('## Active — Peretz Action Required')[1] || '';
+  const claudeSection = peretzSection.split('## Active — Claude Can Execute')[0] || '';
+
+  const tasks = [];
+  const lines = claudeSection.split('\n');
+  let current = null;
+
+  for (const line of lines) {
+    if (line.startsWith('### ')) {
+      if (current) tasks.push(current);
+      const title = line.replace(/^###\s+/, '').replace(/[🚨✅]/g, '').trim();
+      current = { title, priority: 'P2', time: '?', details: [], completed: title.includes('COMPLETE') };
+    } else if (current && line.startsWith('**Priority**:')) {
+      const pm = line.match(/P(\d)/);
+      if (pm) current.priority = `P${pm[1]}`;
+      const tm = line.match(/\*\*Time\*\*:\s*(\S+)/);
+      if (tm) current.time = tm[1];
+    } else if (current && line.startsWith('- ')) {
+      current.details.push(line.replace(/^-\s+/, ''));
+    }
+  }
+  if (current) tasks.push(current);
+
+  // Parse Claude-advancing tasks
+  const claudeAdvancing = [];
+  const claudeSectionFull = tasksContent.split('## Active — Claude Can Execute')[1] || '';
+  const claudeOnly = claudeSectionFull.split('## Simmering')[0] || '';
+  let claudeCurrent = null;
+  for (const line of claudeOnly.split('\n')) {
+    if (line.startsWith('### ')) {
+      if (claudeCurrent) claudeAdvancing.push(claudeCurrent);
+      claudeCurrent = { title: line.replace(/^###\s+/, '').trim(), details: [] };
+    } else if (claudeCurrent && line.startsWith('- ')) {
+      claudeCurrent.details.push(line.replace(/^-\s+/, ''));
+    }
+  }
+  if (claudeCurrent) claudeAdvancing.push(claudeCurrent);
+
+  // Machine status
+  const hearthOk = run('curl -sk --max-time 2 https://localhost:3001/health >/dev/null 2>&1 && echo ok || echo down') === 'ok';
+  const anvilOk = run('curl -s --max-time 2 http://192.168.1.105:11434/api/tags >/dev/null 2>&1 && echo ok || echo down') === 'ok';
+  const nasOk = run('ping -c 1 -W 1 192.168.1.57 >/dev/null 2>&1 && echo ok || echo down') === 'ok';
+
+  return {
+    peretzTasks: tasks.filter(t => !t.completed),
+    completedTasks: tasks.filter(t => t.completed),
+    claudeAdvancing,
+    machines: { hearth: hearthOk, anvil: anvilOk, nas: nasOk },
+    timestamp: new Date().toISOString()
+  };
+}
+
+function renderCommandHTML() {
+  const data = getCommandData();
+  const p0 = data.peretzTasks.filter(t => t.priority === 'P0');
+  const p1 = data.peretzTasks.filter(t => t.priority === 'P1');
+  const p2 = data.peretzTasks.filter(t => t.priority === 'P2' || t.priority === 'P3');
+
+  const dot = (ok) => ok
+    ? '<span style="display:inline-block;width:10px;height:10px;background:#00ff88;border-radius:50%;margin-right:6px"></span>'
+    : '<span style="display:inline-block;width:10px;height:10px;background:#ff4444;border-radius:50%;margin-right:6px"></span>';
+
+  const taskCard = (t, color) => `
+    <div style="background:#111;border-left:3px solid ${color};border-radius:6px;padding:14px;margin-bottom:10px">
+      <div style="display:flex;justify-content:space-between;align-items:center">
+        <span style="color:#fff;font-weight:600;font-size:14px">${t.title}</span>
+        <span style="color:${color};font-size:12px;font-weight:600">${t.priority}</span>
+      </div>
+      ${t.time !== '?' ? `<div style="color:#666;font-size:11px;margin-top:4px">Est: ${t.time}</div>` : ''}
+      ${t.details.length > 0 ? `<div style="color:#888;font-size:12px;margin-top:6px">${t.details[0]}</div>` : ''}
+    </div>`;
+
+  const claudeCard = (t) => `
+    <div style="background:#111;border-left:3px solid #00aaff;border-radius:6px;padding:12px;margin-bottom:8px">
+      <span style="color:#ccc;font-size:13px">${t.title}</span>
+    </div>`;
+
+  return `<!DOCTYPE html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="60">
+<title>Command | Ω₀</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono',Monaco,'Cascadia Code',monospace; padding:20px; font-size:14px; }
+  .container { max-width:1000px; margin:0 auto; }
+  h1 { color:#00ff88; font-size:24px; margin-bottom:6px; }
+  .subtitle { color:#555; font-size:13px; margin-bottom:20px; }
+  .section { margin-bottom:30px; }
+  .section-title { color:#00aaff; font-size:16px; margin-bottom:12px; font-weight:600; }
+  .machines { display:flex; gap:20px; margin-bottom:24px; }
+  .machine { background:#111; border:1px solid #222; border-radius:8px; padding:12px 16px; flex:1; }
+  .machine-name { color:#fff; font-size:14px; font-weight:600; }
+  .machine-role { color:#666; font-size:11px; }
+</style></head><body><div class="container">
+${renderNav('command')}
+<h1>COMMAND CENTER</h1>
+<div class="subtitle">Where you are needed — updated ${new Date().toLocaleTimeString()}</div>
+
+<div class="machines">
+  <div class="machine">${dot(data.machines.hearth)}<span class="machine-name">Hearth</span><div class="machine-role">Orchestration</div></div>
+  <div class="machine">${dot(data.machines.anvil)}<span class="machine-name">Anvil</span><div class="machine-role">AI Compute</div></div>
+  <div class="machine">${dot(data.machines.nas)}<span class="machine-name">NAS</span><div class="machine-role">Storage</div></div>
+</div>
+
+${p0.length > 0 ? `<div class="section">
+  <div class="section-title" style="color:#ff4444">CRITICAL (${p0.length})</div>
+  ${p0.map(t => taskCard(t, '#ff4444')).join('')}
+</div>` : ''}
+
+${p1.length > 0 ? `<div class="section">
+  <div class="section-title" style="color:#ffaa00">HIGH PRIORITY (${p1.length})</div>
+  ${p1.map(t => taskCard(t, '#ffaa00')).join('')}
+</div>` : ''}
+
+${p2.length > 0 ? `<div class="section">
+  <div class="section-title">NORMAL (${p2.length})</div>
+  ${p2.map(t => taskCard(t, '#444')).join('')}
+</div>` : ''}
+
+<div class="section">
+  <div class="section-title" style="color:#00aaff">CLAUDE ADVANCING (${data.claudeAdvancing.length} threads)</div>
+  ${data.claudeAdvancing.map(t => claudeCard(t)).join('')}
+</div>
+
+${data.completedTasks.length > 0 ? `<div class="section" style="opacity:0.5">
+  <div class="section-title">RECENTLY COMPLETED (${data.completedTasks.length})</div>
+  ${data.completedTasks.map(t => `<div style="color:#555;font-size:12px;padding:4px 0">${t.title}</div>`).join('')}
+</div>` : ''}
+
+<div style="color:#333;font-size:11px;text-align:center;margin-top:30px">
+  Source: ~/.claude/TASKS.md | Phase-lock: ~/.claude/PHASE-LOCK-STATUS.md | Auto-refresh 60s
+</div>
+</div></body></html>`;
+}
+
+// ─── Machines Page — Cross-Machine Status ─────────────────────────────
+
+function getMachineStatus() {
+  // Hearth
+  const hearthDisk = run("df -h / | tail -1 | awk '{print $4, $5}'");
+  const hearthMem = run("memory_pressure 2>/dev/null | head -1 || echo 'unknown'");
+  const hearthUptime = run('uptime');
+  const hearthServices = {
+    dashboard: 'up', // self — if this code is running, dashboard is up
+    api: run('curl -sk --max-time 2 https://localhost:3001/health >/dev/null 2>&1 && echo up || echo down'),
+    promptBrowser: run('curl -sk --max-time 2 https://localhost:3002/api/stats >/dev/null 2>&1 && echo up || echo down'),
+    litellm: run('curl -s --max-time 2 http://localhost:4000/health/readiness >/dev/null 2>&1 && echo up || echo down'),
+  };
+
+  // Anvil
+  const anvilPing = run('ping -c 1 -W 1 192.168.1.105 2>/dev/null | grep "time=" | sed "s/.*time=//" || echo "down"');
+  const anvilOllama = run('curl -s --max-time 3 http://192.168.1.105:11434/api/tags 2>/dev/null || echo "down"');
+  let anvilModels = [];
+  try {
+    const data = JSON.parse(anvilOllama);
+    anvilModels = (data.models || []).map(m => ({ name: m.name, size: (m.size / 1e9).toFixed(1) + ' GB' }));
+  } catch { }
+  const anvilPs = run('curl -s --max-time 3 http://192.168.1.105:11434/api/ps 2>/dev/null || echo "{}"');
+  let anvilLoaded = [];
+  try {
+    const psData = JSON.parse(anvilPs);
+    anvilLoaded = (psData.models || []).map(m => m.name);
+  } catch { }
+
+  // NAS
+  const nasPing = run('ping -c 1 -W 1 192.168.1.57 2>/dev/null | grep "time=" | sed "s/.*time=//" || echo "down"');
+
+  return {
+    hearth: {
+      hostname: 'Mac Studio M2 Max',
+      codename: 'Hearth',
+      role: 'Orchestration + UI',
+      ip: '192.168.1.113',
+      disk: hearthDisk,
+      memory: hearthMem,
+      uptime: hearthUptime,
+      services: hearthServices,
+    },
+    anvil: {
+      hostname: 'Mac Studio M3 Ultra',
+      codename: 'Anvil',
+      role: 'AI Compute',
+      ip: '192.168.1.105',
+      tailscale: '100.116.17.120',
+      ping: anvilPing,
+      models: anvilModels,
+      loadedModels: anvilLoaded,
+      ollamaUp: anvilModels.length > 0,
+    },
+    nas: {
+      hostname: 'Synology DS223j',
+      codename: 'NAS',
+      role: 'Storage + Hosting',
+      ip: '192.168.1.57',
+      tailscale: '100.93.227.12',
+      ping: nasPing,
+      reachable: !nasPing.includes('down'),
+    },
+    timestamp: new Date().toISOString()
+  };
+}
+
+function renderMachinesHTML() {
+  const m = getMachineStatus();
+  const dot = (ok) => `<span style="display:inline-block;width:12px;height:12px;background:${ok ? '#00ff88' : '#ff4444'};border-radius:50%;margin-right:8px;box-shadow:0 0 6px ${ok ? '#00ff8844' : '#ff444444'}"></span>`;
+  const svcDot = (status) => dot(status === 'up');
+
+  const totalVRAM = m.anvil.models.reduce((s, md) => s + parseFloat(md.size), 0).toFixed(1);
+
+  return `<!DOCTYPE html><html><head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="refresh" content="30">
+<title>Machines | Ω₀</title>
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono',Monaco,monospace; padding:20px; font-size:14px; }
+  .container { max-width:1100px; margin:0 auto; }
+  h1 { color:#00ff88; font-size:24px; margin-bottom:20px; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; margin-bottom:24px; }
+  .card { background:#111; border:1px solid #222; border-radius:10px; padding:20px; }
+  .card-header { display:flex; align-items:center; margin-bottom:12px; }
+  .card-name { color:#fff; font-size:18px; font-weight:700; }
+  .card-role { color:#666; font-size:12px; margin-top:2px; }
+  .card-ip { color:#00aaff; font-size:12px; }
+  .metric { display:flex; justify-content:space-between; padding:6px 0; border-bottom:1px solid #1a1a1a; }
+  .metric:last-child { border-bottom:none; }
+  .metric-label { color:#666; }
+  .metric-value { color:#ccc; }
+  .model-list { margin-top:8px; }
+  .model { display:flex; justify-content:space-between; padding:4px 8px; background:#0a0a0a; border-radius:4px; margin-bottom:4px; }
+  .model-name { color:#00aaff; font-size:12px; }
+  .model-size { color:#555; font-size:12px; }
+  .loaded { border-left:2px solid #00ff88; }
+  .services { margin-top:8px; }
+  .svc { display:flex; align-items:center; padding:3px 0; font-size:13px; }
+  .topology { background:#111; border:1px solid #222; border-radius:10px; padding:20px; margin-top:16px; }
+  .topo-title { color:#00aaff; font-size:16px; margin-bottom:12px; }
+  pre.topo { color:#555; font-size:11px; line-height:1.4; }
+  pre.topo span { color:#00ff88; }
+</style></head><body><div class="container">
+${renderNav('machines')}
+<h1>MACHINE STATUS</h1>
+
+<div class="grid">
+  <div class="card">
+    <div class="card-header">${dot(true)}<div><div class="card-name">Hearth</div><div class="card-role">Orchestration + UI</div></div></div>
+    <div class="card-ip">LAN: ${m.hearth.ip}</div>
+    <div style="margin-top:12px">
+      <div class="metric"><span class="metric-label">Disk Free</span><span class="metric-value">${m.hearth.disk}</span></div>
+      <div class="metric"><span class="metric-label">Memory</span><span class="metric-value">${m.hearth.memory.substring(0, 40)}</span></div>
+    </div>
+    <div class="services" style="margin-top:12px">
+      <div style="color:#666;font-size:11px;margin-bottom:6px">SERVICES</div>
+      <div class="svc">${svcDot(m.hearth.services.dashboard)} Dashboard :3000</div>
+      <div class="svc">${svcDot(m.hearth.services.api)} API :3001</div>
+      <div class="svc">${svcDot(m.hearth.services.promptBrowser)} Prompt Browser :3002</div>
+      <div class="svc">${svcDot(m.hearth.services.litellm)} LiteLLM :4000</div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">${dot(m.anvil.ollamaUp)}<div><div class="card-name">Anvil</div><div class="card-role">AI Compute (M3 Ultra, 96GB)</div></div></div>
+    <div class="card-ip">LAN: ${m.anvil.ip} | TS: ${m.anvil.tailscale}</div>
+    <div style="margin-top:8px">
+      <div class="metric"><span class="metric-label">Ping</span><span class="metric-value">${m.anvil.ping}</span></div>
+      <div class="metric"><span class="metric-label">Models</span><span class="metric-value">${m.anvil.models.length} installed (${totalVRAM} GB)</span></div>
+      <div class="metric"><span class="metric-label">Loaded</span><span class="metric-value">${m.anvil.loadedModels.length > 0 ? m.anvil.loadedModels.join(', ') : 'none active'}</span></div>
+    </div>
+    <div class="model-list">
+      <div style="color:#666;font-size:11px;margin:8px 0 4px">MODELS</div>
+      ${m.anvil.models.map(md => `<div class="model ${m.anvil.loadedModels.includes(md.name) ? 'loaded' : ''}"><span class="model-name">${md.name}</span><span class="model-size">${md.size}</span></div>`).join('')}
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-header">${dot(m.nas.reachable)}<div><div class="card-name">NAS</div><div class="card-role">Storage + Hosting</div></div></div>
+    <div class="card-ip">LAN: ${m.nas.ip} | TS: ${m.nas.tailscale}</div>
+    <div style="margin-top:8px">
+      <div class="metric"><span class="metric-label">Ping</span><span class="metric-value">${m.nas.ping}</span></div>
+      <div class="metric"><span class="metric-label">Services</span><span class="metric-value">Caddy, cloudflared, Time Machine</span></div>
+      <div class="metric"><span class="metric-label">Storage</span><span class="metric-value">16TB total, ~14TB free</span></div>
+    </div>
+  </div>
+</div>
+
+<div class="topology">
+  <div class="topo-title">NETWORK TOPOLOGY</div>
+  <pre class="topo">
+  Internet <span>&lt;-&gt;</span> Cloudflare Tunnel <span>&lt;-&gt;</span> NAS (Caddy :8080/:8081)
+                                           |
+                                     LAN (1GbE*)
+                           +----------+----------+
+                           |          |          |
+                        <span>Hearth</span>    <span>Anvil</span>      <span>NAS</span>
+                        .113      .105       .57
+                           |          |
+                           +----+-----+
+                                | <span>10GbE pending (QNAP in cart)</span>
+                                |
+                         Tailscale Mesh
+                    +-------+-------+-------+
+                  <span>iPad</span>   <span>iPhone</span>  <span>Hearth</span>  <span>Anvil</span>  <span>NAS</span>
+  </pre>
+</div>
+
+<div style="color:#333;font-size:11px;text-align:center;margin-top:20px">
+  Auto-refresh 30s | Docs: ~/.claude/HEARTH-ANVIL-COLLABORATION.md
+</div>
+</div></body></html>`;
+}
+
