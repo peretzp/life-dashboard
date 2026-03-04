@@ -172,6 +172,19 @@ function getState() {
   const promptTotal = (promptStats.match(/Total prompts:\s+(\d+)/) || [])[1] || '0';
   const promptSessions = (promptStats.match(/Sessions:\s+(\d+)/) || [])[1] || '0';
 
+  // Memory pressure alarm (crash prevention — WindowServer died at 141GB on 64GB)
+  let memory = { free_gb: null, compressor_gb: null, alarm: false, alarm_reason: null };
+  try {
+    const vmstat = run('vm_stat 2>/dev/null', 3000);
+    const pageSize = 16384; // Apple Silicon default
+    const freePages = parseInt((vmstat.match(/Pages free:\s+(\d+)/) || [])[1] || '0');
+    const compressorPages = parseInt((vmstat.match(/Pages occupied by compressor:\s+(\d+)/) || [])[1] || '0');
+    memory.free_gb = parseFloat((freePages * pageSize / 1073741824).toFixed(1));
+    memory.compressor_gb = parseFloat((compressorPages * pageSize / 1073741824).toFixed(1));
+    if (memory.compressor_gb > 20) { memory.alarm = true; memory.alarm_reason = `Compressor ${memory.compressor_gb}GB (>20GB)`; }
+    if (memory.free_gb < 2) { memory.alarm = true; memory.alarm_reason = `Free ${memory.free_gb}GB (<2GB)`; }
+  } catch {}
+
   // Token usage / wallet
   let wallet = { total_tokens: 0, cost: { total: 0 }, saved_by_cache: 0 };
   try {
@@ -181,7 +194,7 @@ function getState() {
 
   return {
     timestamp: new Date().toISOString(),
-    system: { diskUsage, uptime: uptime.replace(/.*up/, 'up'), volumes: volumes.split('\n') },
+    system: { diskUsage, uptime: uptime.replace(/.*up/, 'up'), volumes: volumes.split('\n'), memory },
     downloads: { total: downloads, organized_folders: downloadsOrg, loose_files: downloadsLoose },
     memoryatlas: { total: atlasTotal, hours: atlasHours, transcribed: atlasTranscribed, published: atlasPublished },
     philological: { polished: philoPolished, total: philoTotal, languages: philoLangs, running: philoRunning },
@@ -435,7 +448,8 @@ function renderNav(activePage = 'dashboard') {
     { path: '/prompts', name: 'Prompts', key: 'prompts' },
     { path: '/search', name: 'Search', key: 'search' },
     { path: '/cheatsheet', name: 'Cheatsheet', key: 'cheatsheet' },
-    { path: '/downloads', name: 'Downloads', key: 'downloads' },
+    { path: '/queue', name: 'Queue', key: 'queue' },
+    { path: '/files', name: 'Files', key: 'files' },
   ];
 
   return `<div class="nav" style="display:flex;gap:16px;margin-bottom:12px">\n` +
@@ -1217,95 +1231,109 @@ function getBriefingData() {
   let tasksContent = '';
   try { tasksContent = fs.readFileSync(TASKS_FILE, 'utf8'); } catch { return { quadrants: [], services: [], generated: new Date().toISOString() }; }
 
-  // Parse tasks into structured items
+  // Parse TASKS.md — current format uses numbered sections with [OWNER] tags
   const items = [];
   const lines = tasksContent.split('\n');
   let currentSection = '';
   let currentTask = null;
+  let skipSection = false;
 
   for (const line of lines) {
-    // Section headers
-    if (line.startsWith('## Active — Peretz')) { currentSection = 'peretz'; continue; }
-    if (line.startsWith('## Active — Claude')) { currentSection = 'claude'; continue; }
-    if (line.startsWith('## Simmering')) { currentSection = 'simmering'; continue; }
-    if (line.startsWith('## Recently Completed')) { currentSection = 'done'; continue; }
-    if (line.startsWith('## Services')) { currentSection = 'services'; continue; }
+    // Section headers: ## 1. TIME-SENSITIVE, ## 2. POST-REBOOT, etc.
+    if (line.startsWith('## ')) {
+      if (currentTask) { items.push(currentTask); currentTask = null; }
+      const sectionLower = line.toLowerCase();
+      if (sectionLower.includes('time-sensitive')) { currentSection = 'urgent'; skipSection = false; }
+      else if (sectionLower.includes('post-reboot') || sectionLower.includes('claude executes')) { currentSection = 'claude-do'; skipSection = false; }
+      else if (sectionLower.includes('review queue')) { currentSection = 'review'; skipSection = false; }
+      else if (sectionLower.includes('5-minute') || sectionLower.includes('low-hanging')) { currentSection = 'quick'; skipSection = false; }
+      else if (sectionLower.includes('infrastructure')) { currentSection = 'infra'; skipSection = false; }
+      else if (sectionLower.includes('data work')) { currentSection = 'data'; skipSection = false; }
+      else if (sectionLower.includes('peretz-blocked') || sectionLower.includes('peretz blocked')) { currentSection = 'blocked'; skipSection = false; }
+      else if (sectionLower.includes('someday') || sectionLower.includes('simmering')) { currentSection = 'simmering'; skipSection = false; }
+      else if (sectionLower.includes('completed') || sectionLower.includes('anvil workload queue')) { currentSection = 'done'; skipSection = true; }
+      else { skipSection = true; }
+      continue;
+    }
+    if (skipSection) continue;
 
-    // Task titles (### headers)
-    const taskMatch = line.match(/^### (.+)/);
-    if (taskMatch && currentSection !== 'done' && currentSection !== 'services') {
+    // Task titles: ### 1a. [PERETZ] Title — extra
+    const taskMatch = line.match(/^### \d+\w*\.\s*(.+)/);
+    if (taskMatch) {
       if (currentTask) items.push(currentTask);
-      const title = taskMatch[1].replace(/[🚨⚡🔴]/g, '').trim();
-      currentTask = { title, section: currentSection, priority: 'P2', owner: '', details: [], status: '', time: '' };
+      const raw = taskMatch[1];
+      // Skip DONE items
+      if (/—\s*DONE\s*$/i.test(raw) || /—\s*COMPLETE\s*$/i.test(raw)) { currentTask = null; continue; }
+      // Extract owner from [PERETZ], [CLAUDE], [TOGETHER]
+      const ownerMatch = raw.match(/\[(\w+)\]\s*/);
+      const owner = ownerMatch ? ownerMatch[1] : '';
+      const title = raw.replace(/\[\w+\]\s*/, '').replace(/[🚨⚡🔴]/g, '').trim();
+      currentTask = { title, section: currentSection, owner, details: [], status: '' };
       continue;
     }
 
-    // Parse metadata line: **Priority**: P1 | **Added**: ... | **Owner**: ... | **Time**: 5 min
-    if (currentTask && line.includes('**Priority**')) {
-      const p = line.match(/P(\d)/);
-      if (p) currentTask.priority = 'P' + p[1];
-      const ownerMatch = line.match(/\*\*Owner\*\*:\s*([^|]+)/);
-      if (ownerMatch) currentTask.owner = ownerMatch[1].trim();
-      const timeMatch = line.match(/\*\*Time\*\*:\s*([^|]+)/);
-      if (timeMatch) currentTask.time = timeMatch[1].trim();
-      const statusMatch = line.match(/\*\*Status\*\*:\s*([^|]+)/);
-      if (statusMatch) currentTask.status = statusMatch[1].trim();
+    // Checkbox items in quick-action sections: - [ ] or - [x]
+    if (currentSection === 'quick' && /^- \[[ x]\]/.test(line)) {
+      if (/^- \[x\]/.test(line)) continue; // Skip done items
+      if (currentTask) items.push(currentTask);
+      const title = line.replace(/^- \[ \]\s*/, '').trim();
+      currentTask = { title, section: 'quick', owner: 'PERETZ', details: [], status: '' };
       continue;
     }
-    if (currentTask && line.startsWith('- ')) {
-      currentTask.details.push(line.replace(/^- /, '').trim());
+
+    // Checkbox items in blocked section
+    if (currentSection === 'blocked' && /^- \[[ x]\]/.test(line)) {
+      if (/^- \[x\]/.test(line)) continue;
+      if (currentTask) items.push(currentTask);
+      const title = line.replace(/^- \[ \]\s*/, '').trim();
+      currentTask = { title, section: 'blocked', owner: 'PERETZ', details: [], status: '' };
+      continue;
     }
-    // Simmering items are bullet points, not ### headers
-    if (currentSection === 'simmering' && line.startsWith('- **')) {
-      const simMatch = line.match(/- \*\*(.+?)\*\*/);
-      if (simMatch) {
-        if (currentTask) items.push(currentTask);
-        currentTask = { title: simMatch[1], section: 'simmering', priority: 'P3', owner: '', details: [line.replace(/^- \*\*.+?\*\*:?\s*/, '')], status: '', time: '' };
-      }
+
+    // Simmering items are bare bullet points
+    if (currentSection === 'simmering' && line.startsWith('- ')) {
+      if (currentTask) items.push(currentTask);
+      const title = line.replace(/^- /, '').trim();
+      currentTask = { title, section: 'simmering', owner: '', details: [], status: '' };
+      continue;
+    }
+
+    // Detail lines under current task
+    if (currentTask && line.startsWith('- ') && !line.startsWith('- [x]')) {
+      const detail = line.replace(/^- /, '').trim();
+      if (!/— DONE|COMPLETE/i.test(detail)) currentTask.details.push(detail);
     }
   }
   if (currentTask) items.push(currentTask);
 
-  // Eisenhower classification
-  // Urgent + Important (DO): P0, P1 with "Peretz" owner
-  // Important not Urgent (SCHEDULE): P1 Claude, P2 with clear value
-  // Urgent not Important (DELEGATE): quick tasks, <15 min
-  // Neither (DROP/SIMMER): simmering items
-  const q1 = []; // Urgent + Important — DO NOW
-  const q2 = []; // Important + Not Urgent — SCHEDULE
-  const q3 = []; // Urgent + Not Important — DELEGATE
-  const q4 = []; // Neither — LATER
+  // Eisenhower classification based on section
+  const q1 = []; // DO NOW: time-sensitive + peretz-blocked
+  const q2 = []; // SCHEDULE: infra + data + claude-do (not done)
+  const q3 = []; // QUICK WINS: 5-min actions + review queue
+  const q4 = []; // LATER: simmering
 
   for (const item of items) {
-    if (item.section === 'simmering') { q4.push(item); continue; }
-    const isQuick = item.time && parseInt(item.time) <= 15;
-
-    if (isQuick) { q3.push(item); }
-    else if (item.priority === 'P0') { q1.push(item); }
-    else if (item.priority === 'P1' && item.owner.toLowerCase().includes('peretz')) { q1.push(item); }
-    else if (item.priority === 'P1') { q2.push(item); }
-    else { q2.push(item); }
-  }
-
-  // Service status
-  const services = [];
-  const svcSection = tasksContent.split('## Services Status')[1];
-  if (svcSection) {
-    const svcLines = svcSection.split('\n').filter(l => l.startsWith('- '));
-    for (const l of svcLines) {
-      const match = l.match(/- (.+?):\s*(.+)/);
-      if (match) services.push({ name: match[1], url: match[2].trim() });
+    switch (item.section) {
+      case 'urgent':   q1.push(item); break;
+      case 'blocked':  q1.push(item); break;
+      case 'claude-do': q2.push(item); break;
+      case 'infra':    q2.push(item); break;
+      case 'data':     q2.push(item); break;
+      case 'review':   q3.push(item); break;
+      case 'quick':    q3.push(item); break;
+      case 'simmering': q4.push(item); break;
+      default:         q2.push(item); break;
     }
   }
 
   return {
     quadrants: [
-      { name: 'DO NOW', emoji: '🔴', desc: 'Urgent + Important', items: q1 },
-      { name: 'SCHEDULE', emoji: '🟡', desc: 'Important, Not Urgent', items: q2 },
-      { name: 'QUICK WINS', emoji: '⚡', desc: 'Under 15 min', items: q3 },
-      { name: 'LATER', emoji: '🔵', desc: 'Simmering', items: q4 },
+      { name: 'DO NOW', emoji: '\u{1F534}', desc: 'Time-Sensitive + Blocked on Peretz', items: q1 },
+      { name: 'SCHEDULE', emoji: '\u{1F7E1}', desc: 'Infrastructure + Data + Claude Work', items: q2 },
+      { name: 'QUICK WINS', emoji: '\u26A1', desc: 'Review Queue + 5-min Actions', items: q3 },
+      { name: 'LATER', emoji: '\u{1F535}', desc: 'Simmering / Someday', items: q4 },
     ],
-    services,
+    services: [],
     totalTasks: items.length,
     generated: new Date().toISOString(),
   };
@@ -1317,13 +1345,12 @@ function renderBriefingHTML() {
   const dateStr = today.toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric', year: 'numeric' });
 
   const renderItem = (item) => {
-    const badge = item.priority === 'P0' ? '<span style="background:#e74c3c;padding:2px 6px;border-radius:3px;font-size:11px">P0</span>'
-      : item.priority === 'P1' ? '<span style="background:#e67e22;padding:2px 6px;border-radius:3px;font-size:11px">P1</span>'
-      : '<span style="background:#3498db;padding:2px 6px;border-radius:3px;font-size:11px">P2</span>';
-    const owner = item.owner ? `<span style="color:#888;font-size:12px"> — ${item.owner}</span>` : '';
-    const time = item.time ? `<span style="color:#2ecc71;font-size:12px"> (${item.time})</span>` : '';
-    const detail = item.details.length > 0 ? `<div style="color:#999;font-size:12px;margin:2px 0 0 16px">${item.details[0]}</div>` : '';
-    return `<div style="margin:6px 0;padding:6px 8px;background:#1a1a2e;border-radius:4px">${badge} ${item.title}${owner}${time}${detail}</div>`;
+    const ownerColors = { PERETZ: '#e67e22', CLAUDE: '#3498db', TOGETHER: '#9b59b6' };
+    const ownerBadge = item.owner
+      ? `<span style="background:${ownerColors[item.owner] || '#555'};padding:2px 6px;border-radius:3px;font-size:11px;margin-right:4px">${item.owner}</span>`
+      : '';
+    const detail = item.details.length > 0 ? `<div style="color:#999;font-size:12px;margin:2px 0 0 16px">${item.details[0].substring(0, 120)}${item.details[0].length > 120 ? '...' : ''}</div>` : '';
+    return `<div style="margin:6px 0;padding:6px 8px;background:#1a1a2e;border-radius:4px">${ownerBadge}${item.title}${detail}</div>`;
   };
 
   const quadrantHTML = data.quadrants.map(q => `
@@ -1854,22 +1881,53 @@ function probeAllStreams() {
     }
   } catch(e) { log.push({ t: now, msg: `Health \u2014 ${e.message}` }); }
 
-  // ─── Anvil (M3 Ultra) ──────────────────
+  // ─── Anvil (M3 Ultra) — Enhanced: probe dashboard API first, fallback to Ollama ──────────────────
   try {
-    const anvilTags = run('curl -s --max-time 3 http://192.168.1.105:11434/api/tags 2>/dev/null');
-    if (anvilTags && anvilTags !== '—') {
-      const anvilData = JSON.parse(anvilTags);
-      const modelCount = (anvilData.models || []).length;
-      const totalSize = (anvilData.models || []).reduce((s, m) => s + (m.size || 0), 0);
-      const sizeGB = (totalSize / 1e9).toFixed(0);
+    let anvilPrimary = '', anvilSecondary = '', anvilTertiary = '', anvilCount = 0, anvilSignal = 'weak';
+    // Try the Anvil dashboard API first (richer data: GPU, jobs, temps)
+    const dashRaw = run('curl -s --max-time 3 http://192.168.1.105:3000/api/status 2>/dev/null');
+    if (dashRaw && dashRaw !== '\u2014' && dashRaw.startsWith('{')) {
+      const dash = JSON.parse(dashRaw);
+      const models = (dash.ollama && dash.ollama.available) || [];
+      const modelCount = models.length;
+      const metrics = dash.metrics || {};
+      const sys = dash.system || {};
+      const gpu = metrics.gpuUsage !== undefined ? Math.round(metrics.gpuUsage) + '% GPU' : '';
+      const power = metrics.powerW ? Math.round(metrics.powerW) + 'W' : '';
+      const ramUsed = metrics.ramUsedGB ? Math.round(metrics.ramUsedGB) : '';
+      const gpuTemp = metrics.gpuTemp ? Math.round(metrics.gpuTemp) + '\u00B0C' : '';
+      const activeJobs = (dash.jobs && dash.jobs.active) || 0;
+      const completedJobs = (dash.jobs && dash.jobs.completed) || 0;
+      const uptime = sys.uptime || '';
+      anvilPrimary = `${modelCount} models${gpu ? ' \u00B7 ' + gpu : ''}${gpuTemp ? ' \u00B7 ' + gpuTemp : ''}`;
+      anvilSecondary = `${ramUsed ? ramUsed + '/96GB RAM' : ''}${power ? ' \u00B7 ' + power : ''}${activeJobs > 0 ? ' \u00B7 ' + activeJobs + ' active' : ''}`;
+      anvilTertiary = `${uptime ? 'up ' + uptime + ' \u00B7 ' : ''}192.168.1.105 \u00B7 M3 Ultra`;
+      anvilCount = modelCount;
+      anvilSignal = modelCount > 0 ? 'strong' : 'medium';
+    } else {
+      // Fallback: direct Ollama probe
+      const anvilTags = run('curl -s --max-time 3 http://192.168.1.105:11434/api/tags 2>/dev/null');
+      if (anvilTags && anvilTags !== '\u2014') {
+        const anvilData = JSON.parse(anvilTags);
+        const modelCount = (anvilData.models || []).length;
+        const totalSize = (anvilData.models || []).reduce((s, m) => s + (m.size || 0), 0);
+        const sizeGB = (totalSize / 1e9).toFixed(0);
+        anvilPrimary = `${modelCount} models`;
+        anvilSecondary = `${sizeGB} GB loaded`;
+        anvilTertiary = '192.168.1.105 \u00B7 96GB \u00B7 Ollama';
+        anvilCount = modelCount;
+        anvilSignal = modelCount > 0 ? 'strong' : 'weak';
+      }
+    }
+    if (anvilPrimary) {
       streams.push({
         id: 'anvil', domain: 'orbit', valence: 'pulse', cadence: 'realtime',
         icon: '\u{2692}\u{FE0F}', label: 'Anvil (M3 Ultra)',
-        primary: `${modelCount} models`, secondary: `${sizeGB} GB loaded`,
-        tertiary: '192.168.1.105 \u00B7 96GB \u00B7 Ollama',
-        count: modelCount, signal: modelCount > 0 ? 'strong' : 'weak',
+        primary: anvilPrimary, secondary: anvilSecondary,
+        tertiary: anvilTertiary,
+        count: anvilCount, signal: anvilSignal,
       });
-      log.push({ t: now, msg: `Anvil \u2014 ${modelCount} models (${sizeGB}GB) on M3 Ultra` });
+      log.push({ t: now, msg: `Anvil \u2014 ${anvilPrimary} \u00B7 ${anvilSecondary}` });
     }
   } catch(e) { log.push({ t: now, msg: `Anvil \u2014 ${e.message}` }); }
 
@@ -2624,12 +2682,49 @@ const server = https.createServer(sslOptions, (req, res) => {
     }
     return;
   }
-  if (req.url === '/downloads') {
+  if (req.url === '/queue') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(renderDownloadsHTML());
+    res.end(renderQueueHTML());
     return;
   }
-  if (req.url === '/api/downloads') {
+  // Intervene: open iTerm2 tab with task context from /queue page
+  if (req.url.startsWith('/api/intervene/') && req.method === 'POST') {
+    const taskId = req.url.split('/').pop();
+    try {
+      const taskJson = run('curl -sk https://localhost:3001/api/q/tasks/' + taskId + ' 2>/dev/null');
+      const task = taskJson ? JSON.parse(taskJson) : null;
+      if (!task) {
+        res.writeHead(404, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: 'Task not found' }));
+        return;
+      }
+      const lastQ = (task.messages || []).filter(m => m.type === 'question' || m.type === 'clarification').pop();
+      const ctxLines = [
+        'Task #' + task.id + ': ' + task.title,
+        'Owner: ' + (task.owner || '') + ' | Assignee: ' + (task.assignee || 'none') + ' | Status: ' + task.status,
+        task.description ? task.description.replace(/\n/g, ' ').substring(0, 200) : '',
+        lastQ ? 'QUESTION from ' + lastQ.author + ': ' + lastQ.content : '',
+      ].filter(Boolean).join('\\n');
+      const osa = 'tell application "iTerm2" to tell current window to create tab with default profile';
+      run("osascript -e '" + osa + "'", 5000);
+      // Small delay then send text to new tab
+      const writeCmd = "osascript -e 'tell application \"iTerm2\" to tell current window to tell current session to write text \"echo \\\"" +
+        "━━ INTERVENTION Task #" + taskId + " ━━\\n" + ctxLines.replace(/"/g, '\\"') + "\\n━━━━━━━━━━━━━━━━━━━━\\\"\"'";
+      run(writeCmd, 5000);
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ ok: true, taskId: parseInt(taskId) }));
+    } catch (e) {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    }
+    return;
+  }
+  if (req.url === '/files' || req.url === '/downloads') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderFilesHTML());
+    return;
+  }
+  if (req.url === '/api/files' || req.url === '/api/downloads') {
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(getDownloadsData(), null, 2));
     return;
@@ -2761,6 +2856,97 @@ const server = https.createServer(sslOptions, (req, res) => {
   if (req.url.startsWith('/api/downloads/browse')) {
     const dirPath = decodeURIComponent(req.url.split('?path=')[1] || process.env.HOME);
     handleDownloadsBrowse(dirPath, res);
+    return;
+  }
+  // ─── Files Hub: Quarantine APIs ───
+  if (req.url === '/api/files/agents') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ agents: getFileAgents(), quarantine: getQuarantineFiles(), suggestions: getRuleSuggestions() }, null, 2));
+    return;
+  }
+  if (req.url === '/api/files/quarantine/restore' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { filepath, destination } = JSON.parse(body);
+        if (!fs.existsSync(filepath)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'File not found' }));
+          return;
+        }
+        const dest = (destination || DOWNLOADS_DIR).replace(/^~/, process.env.HOME);
+        if (!fs.existsSync(dest)) fs.mkdirSync(dest, { recursive: true });
+        const filename = path.basename(filepath);
+        fs.renameSync(filepath, path.join(dest, filename));
+        fs.appendFileSync(DOWNLOAD_LOG_FILE, `[${new Date().toISOString()}] ↩ QUARANTINE-RESTORE: ${filename} → ${dest.replace(process.env.HOME, '~')}\n`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, restored: path.join(dest, filename) }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  if (req.url === '/api/files/quarantine/delete' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { filepath } = JSON.parse(body);
+        if (!fs.existsSync(filepath)) {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'File not found' }));
+          return;
+        }
+        fs.unlinkSync(filepath);
+        fs.appendFileSync(DOWNLOAD_LOG_FILE, `[${new Date().toISOString()}] ✗ QUARANTINE-DELETE: ${path.basename(filepath)}\n`);
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, deleted: filepath }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+  // ─── Files Hub: Agent Activity Feed ───
+  if (req.url === '/api/files/activity') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ activity: getAgentActivity(50) }));
+    return;
+  }
+  // ─── Files Hub: Data Sources Registry ───
+  if (req.url === '/api/files/sources') {
+    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify({ sources: getDataSources() }));
+    return;
+  }
+  if (req.url === '/api/files/sources/annotate' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const { id, tags, pipelineTarget, notes } = JSON.parse(body);
+        const updates = {};
+        if (tags !== undefined) updates.tags = tags;
+        if (pipelineTarget !== undefined) updates.pipelineTarget = pipelineTarget;
+        if (notes !== undefined) updates.notes = notes;
+        const source = updateDataSource(id, updates);
+        if (source) {
+          appendActivity('Dashboard', 'annotate', source.path, `Updated ${id}: ${Object.keys(updates).join(', ')}`, 'done');
+          res.writeHead(200, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ ok: true, source }));
+        } else {
+          res.writeHead(404, { 'Content-Type': 'application/json' });
+          res.end(JSON.stringify({ error: 'Source not found: ' + id }));
+        }
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
     return;
   }
   if (req.url.startsWith('/search')) {
@@ -3468,7 +3654,7 @@ function renderEndpointsHTML() {
         { method: 'GET', path: '/', desc: 'Main dashboard with system metrics' },
         { method: 'GET', path: '/agents', desc: 'Agent collaboration status' },
         { method: 'GET', path: '/briefing', desc: 'Daily Briefing - Eisenhower priority matrix' },
-        { method: 'GET', path: '/stream', desc: 'Life Stream - 15 data source probes' },
+        { method: 'GET', path: '/stream', desc: 'Life Stream - 18 data source probes (incl. Anvil)' },
         { method: 'GET', path: '/threads', desc: 'Active threads from MEMORY.md' },
         { method: 'GET', path: '/philological', desc: 'Philological pipeline - source restoration + literary translation' },
         { method: 'GET', path: '/plan', desc: 'Plan execution tracker' },
@@ -4401,6 +4587,16 @@ function getMachineStatus() {
     } catch { }
   }
 
+  // Anvil agents
+  let anvilAgents = [];
+  try {
+    const agentJson = run('curl -s --max-time 3 http://192.168.1.105:3000/api/agent-status 2>/dev/null || echo ""');
+    if (agentJson) {
+      const parsed = JSON.parse(agentJson);
+      anvilAgents = parsed.agents || [];
+    }
+  } catch {}
+
   // NAS
   const nasPing = run('ping -c 1 -W 1 192.168.1.57 2>/dev/null | grep "time=" | sed "s/.*time=//" || echo "down"');
 
@@ -4429,6 +4625,7 @@ function getMachineStatus() {
       metrics: anvilMetrics,
       jobs: anvilJobs,
       system: anvilSystem,
+      agents: anvilAgents,
     },
     nas: {
       hostname: 'Synology DS223j',
@@ -4522,6 +4719,13 @@ ${renderNav('machines')}
       <div style="color:#666;font-size:11px;margin:8px 0 4px">MODELS (${m.anvil.loadedModels.length} loaded)</div>
       ${m.anvil.models.map(md => `<div class="model ${m.anvil.loadedModels.includes(md.name) ? 'loaded' : ''}"><span class="model-name">${md.name}</span><span class="model-size">${md.size}</span></div>`).join('')}
     </div>
+    ${m.anvil.agents && m.anvil.agents.length > 0 ? `<div style="margin-top:12px">
+      <div style="color:#666;font-size:11px;margin-bottom:6px">AGENTS (${m.anvil.agents.filter(a => a.status === 'active').length} active)</div>
+      ${m.anvil.agents.map(a => {
+        const agentDot = a.status === 'active' ? dot(true) : '<span style="display:inline-block;width:12px;height:12px;background:#555;border-radius:50%;margin-right:8px"></span>';
+        return '<div class="svc">' + agentDot + '<span style="color:#e0e0e0;font-weight:bold">' + (a.agent || 'unknown') + '</span><span style="color:#555;margin-left:8px;font-size:11px">' + (a.task || '') + '</span></div>';
+      }).join('')}
+    </div>` : ''}
   </div>
 
   <div class="card">
@@ -4570,6 +4774,255 @@ const DOWNLOAD_PINS_FILE = path.join(DOWNLOADS_DIR, '.download-pinned.json');
 const DOWNLOAD_CORRECTIONS_FILE = path.join(process.env.HOME, '.download-corrections.jsonl');
 const PLAYWRIGHT_SEEN_FILE = path.join(process.env.HOME, '.playwright-bridge-seen.json');
 const DOWNLOAD_TAGS_FILE = path.join(DOWNLOADS_DIR, '.download-tags.json');
+
+// ─── File Management Hub: Agent & Daemon Status ───
+
+const QUARANTINE_DIR = path.join(process.env.HOME, '.claude', 'quarantine');
+const QUARANTINE_LOG = path.join(QUARANTINE_DIR, 'QUARANTINE-LOG.md');
+const SKILLS_DIR = path.join(process.env.HOME, '.claude', 'skills');
+const AGENT_ACTIVITY_FILE = path.join(process.env.HOME, '.claude', 'agent-activity.jsonl');
+const DATA_SOURCES_FILE = path.join(process.env.HOME, '.claude', 'data-sources.json');
+
+function getFileAgents() {
+  const agents = [];
+
+  // 1. Download daemon
+  const daemonRunning = run('launchctl list | grep -q download-daemon && echo "1" || echo "0"', 1000) === '1';
+  const daemonLog = path.join(process.env.HOME, '.download-daemon.log');
+  let daemonLastActivity = null;
+  try {
+    const stat = fs.statSync(daemonLog);
+    daemonLastActivity = stat.mtime.toISOString();
+  } catch {}
+  let daemonRuleCount = 0;
+  try {
+    const config = JSON.parse(fs.readFileSync(DOWNLOAD_RULES_FILE, 'utf8'));
+    daemonRuleCount = (config.rules || []).length;
+  } catch {}
+  agents.push({
+    name: 'Download Daemon',
+    type: 'daemon',
+    status: daemonRunning ? 'running' : 'stopped',
+    icon: daemonRunning ? 'ON' : 'OFF',
+    detail: `${daemonRuleCount} rules · fswatch ~/Downloads/`,
+    lastActivity: daemonLastActivity,
+    color: daemonRunning ? '#00ff88' : '#ff4444'
+  });
+
+  // 2. Playwright bridge
+  let pwBridged = 0;
+  try {
+    const seen = JSON.parse(fs.readFileSync(PLAYWRIGHT_SEEN_FILE, 'utf8'));
+    for (const v of Object.values(seen)) { if (v.bridged) pwBridged++; }
+  } catch {}
+  agents.push({
+    name: 'Playwright Bridge',
+    type: 'bridge',
+    status: pwBridged > 0 ? 'active' : 'idle',
+    icon: String(pwBridged),
+    detail: `${pwBridged} files bridged from browser automation`,
+    lastActivity: null,
+    color: pwBridged > 0 ? '#ff6600' : '#555'
+  });
+
+  // 3. Quarantine system
+  let quarantineCount = 0;
+  let quarantineDirs = [];
+  try {
+    const entries = fs.readdirSync(QUARANTINE_DIR);
+    for (const e of entries) {
+      const fp = path.join(QUARANTINE_DIR, e);
+      try {
+        if (fs.statSync(fp).isDirectory()) {
+          const files = fs.readdirSync(fp).filter(f => !f.startsWith('.'));
+          quarantineCount += files.length;
+          quarantineDirs.push({ date: e, count: files.length });
+        }
+      } catch {}
+    }
+  } catch {}
+  agents.push({
+    name: 'Quarantine',
+    type: 'system',
+    status: quarantineCount > 0 ? 'review' : 'clear',
+    icon: String(quarantineCount),
+    detail: quarantineCount > 0 ? `${quarantineCount} files awaiting review` : 'No files in quarantine',
+    lastActivity: null,
+    color: quarantineCount > 0 ? '#ffaa00' : '#555'
+  });
+
+  // 4. Skills (file management related)
+  let skillCount = 0;
+  let skillNames = [];
+  try {
+    const skills = fs.readdirSync(SKILLS_DIR).filter(f => f.endsWith('.md'));
+    skillCount = skills.length;
+    skillNames = skills.map(s => s.replace('.md', ''));
+  } catch {}
+  agents.push({
+    name: 'Skills Engine',
+    type: 'skills',
+    status: skillCount > 0 ? 'loaded' : 'empty',
+    icon: String(skillCount),
+    detail: skillNames.join(', '),
+    lastActivity: null,
+    color: '#aa55ff'
+  });
+
+  // 5. IRS Transcripts (check latest)
+  const irsDir = path.join(process.env.HOME, 'Documents', 'Finances', 'IRS-Transcripts');
+  let irsCount = 0;
+  try {
+    const years = fs.readdirSync(irsDir).filter(d => /^\d{4}$/.test(d));
+    for (const year of years) {
+      const files = fs.readdirSync(path.join(irsDir, year)).filter(f => f.endsWith('.pdf'));
+      irsCount += files.length;
+    }
+  } catch {}
+  if (irsCount > 0) {
+    agents.push({
+      name: 'IRS Transcripts',
+      type: 'archive',
+      status: 'stored',
+      icon: String(irsCount),
+      detail: `${irsCount} PDFs organized by year`,
+      lastActivity: null,
+      color: '#00aaff'
+    });
+  }
+
+  // 6. NAS sync status
+  const nasAvail = run('mount | grep -q "/Volumes/home" && echo "1" || echo "0"', 2000) === '1';
+  agents.push({
+    name: 'NAS (DS223j)',
+    type: 'storage',
+    status: nasAvail ? 'mounted' : 'offline',
+    icon: nasAvail ? 'ON' : 'OFF',
+    detail: nasAvail ? 'SMB mounted at /Volumes/home' : 'Not mounted',
+    lastActivity: null,
+    color: nasAvail ? '#00ff88' : '#555'
+  });
+
+  return agents;
+}
+
+function getQuarantineFiles() {
+  const items = [];
+  try {
+    const entries = fs.readdirSync(QUARANTINE_DIR).sort().reverse();
+    for (const dateDir of entries) {
+      const dp = path.join(QUARANTINE_DIR, dateDir);
+      try {
+        if (!fs.statSync(dp).isDirectory()) continue;
+        const files = fs.readdirSync(dp).filter(f => !f.startsWith('.'));
+        for (const file of files) {
+          const fp = path.join(dp, file);
+          try {
+            const stat = fs.statSync(fp);
+            items.push({
+              filename: file,
+              date: dateDir,
+              size: stat.size,
+              path: fp,
+              isDir: stat.isDirectory()
+            });
+          } catch {}
+        }
+      } catch {}
+    }
+  } catch {}
+  return items.slice(0, 50);
+}
+
+function getRuleSuggestions() {
+  const suggestions = [];
+  try {
+    const corrections = fs.readFileSync(DOWNLOAD_CORRECTIONS_FILE, 'utf8')
+      .split('\n').filter(Boolean).map(l => JSON.parse(l));
+    if (corrections.length < 2) return suggestions;
+
+    // Group by extension + destination
+    const groups = {};
+    for (const c of corrections) {
+      const key = `${c.extension}|${c.to}`;
+      if (!groups[key]) groups[key] = { ext: c.extension, to: c.to, files: [], keywords: {} };
+      groups[key].files.push(c.filename);
+      for (const kw of (c.keywords || [])) {
+        groups[key].keywords[kw] = (groups[key].keywords[kw] || 0) + 1;
+      }
+    }
+
+    // Load existing rules to avoid duplicates
+    let existingPatterns = new Set();
+    try {
+      const config = JSON.parse(fs.readFileSync(DOWNLOAD_RULES_FILE, 'utf8'));
+      for (const r of config.rules) {
+        for (const p of (r.patterns || [])) existingPatterns.add(p.toLowerCase());
+      }
+    } catch {}
+
+    // Suggest rules for groups with 2+ corrections
+    for (const [, g] of Object.entries(groups)) {
+      if (g.files.length < 2) continue;
+      const pattern = '*' + g.ext;
+      // Skip if pattern already covered by existing rules
+      if (existingPatterns.has(pattern)) continue;
+
+      const topKeywords = Object.entries(g.keywords)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 3)
+        .filter(([, count]) => count >= 2)
+        .map(([kw]) => kw);
+
+      const shortDest = g.to.replace(process.env.HOME, '~');
+      suggestions.push({
+        pattern,
+        contains: topKeywords,
+        destination: shortDest,
+        count: g.files.length,
+        examples: g.files.slice(0, 3)
+      });
+    }
+    suggestions.sort((a, b) => b.count - a.count);
+  } catch {}
+  return suggestions.slice(0, 5);
+}
+
+// ─── Agent Activity Feed ───
+
+function getAgentActivity(limit = 30) {
+  try {
+    const lines = fs.readFileSync(AGENT_ACTIVITY_FILE, 'utf8').split('\n').filter(Boolean);
+    return lines.slice(-limit).reverse().map(l => {
+      try { return JSON.parse(l); } catch { return null; }
+    }).filter(Boolean);
+  } catch { return []; }
+}
+
+function appendActivity(agent, action, target, detail, status = 'done') {
+  const entry = { timestamp: new Date().toISOString(), agent, action, target, detail, status };
+  try { fs.appendFileSync(AGENT_ACTIVITY_FILE, JSON.stringify(entry) + '\n'); } catch {}
+  return entry;
+}
+
+// ─── Data Sources Registry ───
+
+function getDataSources() {
+  try {
+    return JSON.parse(fs.readFileSync(DATA_SOURCES_FILE, 'utf8'));
+  } catch { return []; }
+}
+
+function updateDataSource(id, updates) {
+  const sources = getDataSources();
+  const idx = sources.findIndex(s => s.id === id);
+  if (idx >= 0) {
+    sources[idx] = { ...sources[idx], ...updates, lastUpdated: new Date().toISOString() };
+    fs.writeFileSync(DATA_SOURCES_FILE, JSON.stringify(sources, null, 2));
+    return sources[idx];
+  }
+  return null;
+}
 
 function getDownloadsData() {
   // Parse recent activity from daemon log
@@ -4703,6 +5156,7 @@ function getDownloadsData() {
     pending,
     rules,
     pins,
+    tags: loadTags(),
     destinations,
     corrections: corrections.slice(-20).reverse(),
     stats: {
@@ -5009,8 +5463,335 @@ function handleDownloadsBrowse(dirPath, res) {
   }
 }
 
-function renderDownloadsHTML() {
+// ─── Queue Page — Unified Task Queue ─────────────────────────────────────
+// Fetches from API :3001 /api/q/* endpoints, renders multi-owner task board
+
+function renderQueueHTML() {
+  const API = 'https://localhost:3001/api/q';
+  return `<!DOCTYPE html><html><head>
+<meta charset="utf-8"><title>Queue | Ω₀</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#0a0a0a;color:#e0e0e0;font-family:'SF Mono','Fira Code',monospace;padding:20px}
+.container{max-width:1400px;margin:0 auto}
+h1{color:#00ff88;font-size:24px;margin-bottom:4px}
+.subtitle{color:#555;font-size:12px;margin-bottom:20px}
+a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
+
+.stats-bar{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
+.stat-chip{background:#111;border:1px solid #222;border-radius:8px;padding:10px 16px;min-width:100px}
+.stat-chip .label{color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
+.stat-chip .val{color:#00ff88;font-size:22px;font-weight:bold}
+.stat-chip .val.orange{color:#ffaa00}
+.stat-chip .val.red{color:#ff4444}
+.stat-chip .val.blue{color:#00aaff}
+
+.owner-tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
+.owner-tab{background:#151515;border:1px solid #222;border-radius:6px;padding:6px 16px;cursor:pointer;font-size:12px;color:#888;transition:all .2s}
+.owner-tab:hover{border-color:#00ff88;color:#ccc}
+.owner-tab.active{background:#00ff8815;border-color:#00ff88;color:#00ff88}
+.owner-tab .count{background:#00ff8825;color:#00ff88;padding:1px 6px;border-radius:4px;font-size:10px;margin-left:6px}
+
+.board{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:24px}
+.column{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:8px;padding:12px}
+.column-header{display:flex;justify-content:space-between;align-items:center;margin-bottom:12px;padding-bottom:8px;border-bottom:1px solid #1a1a1a}
+.column-title{font-size:13px;text-transform:uppercase;letter-spacing:.5px}
+.column-title.pending{color:#ffaa00}
+.column-title.in_progress{color:#00aaff}
+.column-title.blocked{color:#ff4444}
+.column-title.completed{color:#00ff88}
+.column-count{font-size:11px;color:#444}
+
+.task-card{background:#111;border:1px solid #1e1e1e;border-radius:6px;padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:border-color .2s}
+.task-card:hover{border-color:#00ff8844}
+.task-card.p1{border-left:3px solid #ff4444}
+.task-card.p2{border-left:3px solid #ffaa00}
+.task-card.p3{border-left:3px solid #00aaff}
+.task-card.p4{border-left:3px solid #888}
+.task-card.p5{border-left:3px solid #444}
+.task-title{color:#e0e0e0;font-size:12px;font-weight:600;margin-bottom:4px}
+.task-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.task-tag{font-size:10px;padding:1px 6px;border-radius:3px}
+.task-tag.owner{background:#00ff8815;color:#00ff88}
+.task-tag.assignee{background:#00aaff15;color:#00aaff}
+.task-tag.category{background:#aa88ff15;color:#aa88ff}
+.task-tag.priority{background:#ffaa0015;color:#ffaa00}
+.task-tag.messages{background:#ff444415;color:#ff8888}
+.task-due{color:#ff4444;font-size:10px}
+
+.thread-panel{display:none;position:fixed;top:0;right:0;width:500px;height:100vh;background:#0a0a0a;border-left:1px solid #222;z-index:100;overflow-y:auto;padding:20px}
+.thread-panel.open{display:block}
+.thread-close{position:absolute;top:12px;right:12px;color:#555;cursor:pointer;font-size:18px}
+.thread-title{color:#00ff88;font-size:16px;margin-bottom:4px}
+.thread-desc{color:#888;font-size:12px;margin-bottom:16px;white-space:pre-wrap}
+.thread-msg{background:#111;border:1px solid #1e1e1e;border-radius:6px;padding:10px;margin-bottom:8px}
+.thread-msg .msg-header{display:flex;justify-content:space-between;margin-bottom:4px}
+.thread-msg .msg-author{color:#00aaff;font-size:11px;font-weight:600}
+.thread-msg .msg-type{font-size:9px;padding:1px 4px;border-radius:3px;text-transform:uppercase}
+.thread-msg .msg-type.question{background:#ffaa0020;color:#ffaa00}
+.thread-msg .msg-type.answer{background:#00ff8820;color:#00ff88}
+.thread-msg .msg-type.ack{background:#00aaff20;color:#00aaff}
+.thread-msg .msg-type.update{background:#88888820;color:#888}
+.thread-msg .msg-type.blocker{background:#ff444420;color:#ff4444}
+.thread-msg .msg-type.note{background:#aa88ff20;color:#aa88ff}
+.thread-msg .msg-content{color:#ccc;font-size:12px;white-space:pre-wrap}
+.thread-msg .msg-time{color:#444;font-size:10px;margin-top:4px}
+
+.msg-input{display:flex;gap:8px;margin-top:12px}
+.msg-input input{flex:1;background:#111;border:1px solid #222;border-radius:4px;padding:8px;color:#e0e0e0;font-family:inherit;font-size:12px}
+.msg-input button{background:#00ff8820;border:1px solid #00ff88;color:#00ff88;padding:8px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px}
+.msg-input button:hover{background:#00ff8840}
+
+.new-task-form{background:#111;border:1px solid #222;border-radius:8px;padding:16px;margin-bottom:20px;display:none}
+.new-task-form.open{display:block}
+.new-task-form input,.new-task-form select,.new-task-form textarea{background:#0d0d0d;border:1px solid #222;border-radius:4px;padding:8px;color:#e0e0e0;font-family:inherit;font-size:12px;width:100%;margin-bottom:8px}
+.new-task-form textarea{height:60px;resize:vertical}
+.form-row{display:flex;gap:8px}
+.form-row>*{flex:1}
+.btn{background:#00ff8820;border:1px solid #00ff88;color:#00ff88;padding:8px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px}
+.btn:hover{background:#00ff8840}
+.btn-secondary{background:#0d0d0d;border:1px solid #333;color:#888}
+.btn-secondary:hover{background:#222}
+.toggle-btn{color:#00ff88;cursor:pointer;font-size:12px;background:none;border:1px solid #00ff8844;padding:4px 12px;border-radius:4px;margin-bottom:16px}
+.toggle-btn:hover{background:#00ff8815}
+
+.footer{color:#333;font-size:10px;text-align:center;padding:16px;border-top:1px solid #111;margin-top:20px}
+</style>
+</head><body>
+<div class="container">
+${renderNav('queue')}
+<h1>Task Queue</h1>
+<div class="subtitle">Unified task management — Peretz, Kevin, agents. Per-task threads. Priority board.</div>
+
+<div class="stats-bar" id="stats-bar"></div>
+
+<button class="toggle-btn" onclick="toggleNewTask()">+ New Task</button>
+<div class="new-task-form" id="new-task-form">
+  <input type="text" id="nt-title" placeholder="Task title...">
+  <textarea id="nt-desc" placeholder="Description (optional)..."></textarea>
+  <div class="form-row">
+    <select id="nt-owner"><option value="peretz">Peretz</option><option value="kevin">Kevin</option><option value="claude">Claude</option></select>
+    <select id="nt-priority"><option value="1">P1 Critical</option><option value="2">P2 High</option><option value="3" selected>P3 Medium</option><option value="4">P4 Low</option><option value="5">P5 Someday</option></select>
+    <select id="nt-category"><option value="">Category...</option><option value="time-sensitive">Time-Sensitive</option><option value="infrastructure">Infrastructure</option><option value="data-work">Data Work</option><option value="review">Review</option><option value="personal">Personal</option><option value="kevin">Kevin</option></select>
+  </div>
+  <div class="form-row" style="margin-top:8px">
+    <button class="btn" onclick="createTask()">Create Task</button>
+    <button class="btn btn-secondary" onclick="toggleNewTask()">Cancel</button>
+  </div>
+</div>
+
+<div class="owner-tabs" id="owner-tabs"></div>
+<div class="board" id="board"></div>
+
+<div class="thread-panel" id="thread-panel">
+  <span class="thread-close" onclick="closeThread()">✕</span>
+  <div id="thread-content"></div>
+</div>
+
+<div class="footer">Task Queue · API at <a href="https://localhost:3001/api/q/stats">:3001/api/q</a> · Auto-refreshes every 15s</div>
+</div>
+
+<script>
+const API = 'https://localhost:3001/api/q';
+let currentOwner = null;
+let allTasks = [];
+
+async function api(path, opts) {
+  try {
+    const r = await fetch(API + path, opts);
+    return await r.json();
+  } catch(e) { console.error(e); return null; }
+}
+
+async function loadAll() {
+  const [stats, tasks] = await Promise.all([
+    api('/stats'),
+    api('/tasks?limit=500')
+  ]);
+
+  if (stats) renderStats(stats);
+  if (tasks) {
+    allTasks = tasks.tasks || [];
+    renderOwnerTabs(allTasks);
+    renderBoard(filterTasks(allTasks));
+  }
+}
+
+function renderStats(s) {
+  const bar = document.getElementById('stats-bar');
+  const statusMap = {};
+  (s.byStatus || []).forEach(x => statusMap[x.status] = x.count);
+  bar.innerHTML =
+    chip('Total', s.total, '') +
+    chip('Pending', statusMap.pending || 0, 'orange') +
+    chip('In Progress', statusMap.in_progress || 0, 'blue') +
+    chip('Blocked', statusMap.blocked || 0, 'red') +
+    chip('Done Today', s.completedToday || 0, '') +
+    chip('Messages (24h)', s.recentMessages || 0, 'blue');
+}
+
+function chip(label, val, cls) {
+  return '<div class="stat-chip"><div class="label">' + label + '</div><div class="val ' + cls + '">' + val + '</div></div>';
+}
+
+function renderOwnerTabs(tasks) {
+  const owners = {};
+  tasks.forEach(t => {
+    if (t.status === 'completed') return;
+    owners[t.owner] = (owners[t.owner] || 0) + 1;
+    if (t.assignee && t.assignee !== t.owner) owners[t.assignee] = (owners[t.assignee] || 0) + 1;
+  });
+  const all = tasks.filter(t => t.status !== 'completed').length;
+  const tabs = document.getElementById('owner-tabs');
+  let html = '<div class="owner-tab' + (currentOwner === null ? ' active' : '') + '" onclick="setOwner(null)">All<span class="count">' + all + '</span></div>';
+  Object.entries(owners).sort((a,b) => b[1]-a[1]).forEach(([name, count]) => {
+    html += '<div class="owner-tab' + (currentOwner === name ? ' active' : '') + '" onclick="setOwner(\\'' + name + '\\')">' + name + '<span class="count">' + count + '</span></div>';
+  });
+  tabs.innerHTML = html;
+}
+
+function setOwner(owner) {
+  currentOwner = owner;
+  renderOwnerTabs(allTasks);
+  renderBoard(filterTasks(allTasks));
+}
+
+function filterTasks(tasks) {
+  if (!currentOwner) return tasks;
+  return tasks.filter(t => t.owner === currentOwner || t.assignee === currentOwner);
+}
+
+function renderBoard(tasks) {
+  const cols = {
+    pending: tasks.filter(t => t.status === 'pending'),
+    in_progress: tasks.filter(t => t.status === 'in_progress'),
+    blocked: tasks.filter(t => t.status === 'blocked'),
+    completed: tasks.filter(t => t.status === 'completed').slice(0, 10)
+  };
+  const board = document.getElementById('board');
+  board.innerHTML =
+    renderColumn('Pending', 'pending', cols.pending) +
+    renderColumn('In Progress', 'in_progress', cols.in_progress) +
+    renderColumn('Blocked', 'blocked', cols.blocked) +
+    renderColumn('Completed', 'completed', cols.completed);
+}
+
+function renderColumn(title, status, tasks) {
+  const cards = tasks.map(t => renderCard(t)).join('');
+  return '<div class="column"><div class="column-header"><span class="column-title ' + status + '">' + title + '</span><span class="column-count">' + tasks.length + '</span></div>' + (cards || '<div style="color:#333;font-size:11px;text-align:center;padding:20px">Empty</div>') + '</div>';
+}
+
+function renderCard(t) {
+  const msgCount = t.messages ? t.messages.length : 0;
+  let meta = '<span class="task-tag priority">P' + t.priority + '</span>';
+  if (t.owner) meta += '<span class="task-tag owner">' + t.owner + '</span>';
+  if (t.assignee && t.assignee !== t.owner) meta += '<span class="task-tag assignee">' + t.assignee + '</span>';
+  if (t.category) meta += '<span class="task-tag category">' + t.category + '</span>';
+  if (msgCount > 0) meta += '<span class="task-tag messages">' + msgCount + ' msg</span>';
+  if (t.due_date) meta += '<span class="task-due">due ' + t.due_date + '</span>';
+  return '<div class="task-card p' + t.priority + '" onclick="openThread(' + t.id + ')"><div class="task-title">' + esc(t.title) + '</div><div class="task-meta">' + meta + '</div></div>';
+}
+
+function esc(s) { return (s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+async function openThread(id) {
+  const task = await api('/tasks/' + id);
+  if (!task) return;
+  const panel = document.getElementById('thread-panel');
+  const content = document.getElementById('thread-content');
+
+  let statusBtns = '<div style="margin:12px 0;display:flex;gap:6px">';
+  ['pending','in_progress','blocked','completed'].forEach(s => {
+    const active = task.status === s ? 'background:#00ff8830;' : '';
+    statusBtns += '<button style="' + active + 'border:1px solid #333;background:#111;color:#aaa;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-family:inherit" onclick="updateStatus(' + id + ',\\'' + s + '\\')">' + s.replace('_',' ') + '</button>';
+  });
+  statusBtns += '</div>';
+
+  let msgs = (task.messages || []).map(m => {
+    return '<div class="thread-msg"><div class="msg-header"><span class="msg-author">' + esc(m.author) + '</span><span class="msg-type ' + m.type + '">' + m.type + '</span></div><div class="msg-content">' + esc(m.content) + '</div><div class="msg-time">' + m.created_at + '</div></div>';
+  }).join('');
+
+  content.innerHTML =
+    '<div class="thread-title">' + esc(task.title) + '</div>' +
+    '<div style="color:#555;font-size:11px;margin-bottom:4px">ID: ' + task.id + ' · Owner: ' + (task.owner||'') + ' · Assignee: ' + (task.assignee||'none') + '</div>' +
+    statusBtns +
+    (task.description ? '<div class="thread-desc">' + esc(task.description) + '</div>' : '') +
+    '<div style="color:#555;font-size:11px;margin:12px 0 8px">Thread (' + (task.messages||[]).length + ')</div>' +
+    msgs +
+    '<div class="msg-input"><input id="msg-input" placeholder="Add message..." onkeydown="if(event.key===\\'Enter\\')sendMsg(' + id + ')"><button onclick="sendMsg(' + id + ')">Send</button></div>' +
+    '<div style="margin-top:12px"><button style="background:#ff444420;border:1px solid #ff4444;color:#ff4444;padding:6px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px;font-weight:600" onclick="intervene(' + id + ')">Open Terminal to Intervene</button></div>';
+
+  panel.classList.add('open');
+}
+
+function closeThread() {
+  document.getElementById('thread-panel').classList.remove('open');
+}
+
+async function sendMsg(taskId) {
+  const input = document.getElementById('msg-input');
+  const content = input.value.trim();
+  if (!content) return;
+  await api('/tasks/' + taskId + '/messages', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ author: 'peretz', type: 'note', content })
+  });
+  input.value = '';
+  openThread(taskId);
+}
+
+async function updateStatus(taskId, status) {
+  await api('/tasks/' + taskId, {
+    method: 'PATCH',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({ status })
+  });
+  openThread(taskId);
+  loadAll();
+}
+
+function toggleNewTask() {
+  document.getElementById('new-task-form').classList.toggle('open');
+}
+
+async function createTask() {
+  const title = document.getElementById('nt-title').value.trim();
+  if (!title) return;
+  await api('/tasks', {
+    method: 'POST',
+    headers: {'Content-Type':'application/json'},
+    body: JSON.stringify({
+      title,
+      description: document.getElementById('nt-desc').value.trim() || null,
+      owner: document.getElementById('nt-owner').value,
+      priority: parseInt(document.getElementById('nt-priority').value),
+      category: document.getElementById('nt-category').value || null
+    })
+  });
+  document.getElementById('nt-title').value = '';
+  document.getElementById('nt-desc').value = '';
+  toggleNewTask();
+  loadAll();
+}
+
+async function intervene(id) {
+  try { await fetch('/api/intervene/' + id, { method: 'POST' }); } catch(e) { console.error(e); }
+}
+
+loadAll();
+setInterval(loadAll, 15000);
+</script>
+</body></html>`;
+}
+
+function renderFilesHTML() {
   const data = getDownloadsData();
+  const agents = getFileAgents();
+  const quarantine = getQuarantineFiles();
+  const suggestions = getRuleSuggestions();
+  const sources = getDataSources();
+  const activityFeed = getAgentActivity(20);
 
   const formatSize = (bytes) => {
     if (bytes > 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
@@ -5031,24 +5812,37 @@ function renderDownloadsHTML() {
     return `<option value="${d}">${short}</option>`;
   }).join('');
 
-  // Pending files table
+  // Night mode status
+  const nowHour = new Date().getHours();
+  const isNightMode = nowHour >= 2 && nowHour < 6;
+
+  // Pending files table (with preview, tags, folder picker)
   const pendingRows = data.pending.map(f => {
-    const countdownColor = f.pinned ? '#aa55ff' : f.countdown <= 0 ? '#ff4444' : f.countdown < 60 ? '#ffaa00' : '#00ff88';
-    const countdownText = f.pinned ? 'PINNED' : f.countdown <= 0 ? 'READY' : formatAge(f.countdown);
     const ruleText = f.matchingRule || '<span style="color:#ff4444">no rule</span>';
     const pinBtn = `<button class="pin-btn ${f.pinned ? 'pinned' : ''}" onclick="togglePin('${f.filename.replace(/'/g, "\\'")}')">📌</button>`;
-    const esc = f.filename.replace(/'/g, "\\'");
-    return `<tr>
-      <td class="filename" title="${f.filename}">${f.filename.length > 40 ? f.filename.slice(0, 37) + '...' : f.filename}</td>
+    const esc = f.filename.replace(/'/g, "\\'").replace(/"/g, '&quot;');
+    const escAttr = f.filename.replace(/'/g, '&#39;').replace(/"/g, '&quot;');
+    const ext = f.filename.includes('.') ? f.filename.split('.').pop().toLowerCase() : '';
+    const previewable = ['pdf','png','jpg','jpeg','gif','webp','svg','txt','md','json','csv'].includes(ext);
+    const tagList = data.tags[f.filename] || [];
+    const tagChips = tagList.map(t => `<span class="tag-chip" onclick="removeTag('${esc}','${t}')">${t} x</span>`).join('');
+    return `<tr class="file-row" data-filename="${escAttr}">
+      <td class="filename" title="${f.filename}">
+        <div style="display:flex;align-items:center;gap:6px">
+          ${previewable ? `<button class="preview-btn" onclick="showPreview('${esc}')" title="Preview">&#x1f441;</button>` : '<span style="width:22px;display:inline-block"></span>'}
+          <span class="fname-click" onclick="showPreview('${esc}')">${f.filename.length > 32 ? f.filename.slice(0, 29) + '...' : f.filename}</span>
+        </div>
+        <div class="tag-row">${tagChips}<button class="add-tag-btn" onclick="promptTag('${esc}')">+tag</button></div>
+      </td>
       <td style="color:#555">${formatSize(f.size)}</td>
-      <td style="color:${countdownColor};font-weight:bold">${countdownText}</td>
       <td>${ruleText}</td>
-      <td style="display:flex;gap:4px;align-items:center">
+      <td class="actions-cell">
         ${pinBtn}
-        <select class="dest-select" onchange="sendTo('${esc}',this.value);this.selectedIndex=0" title="Send to...">
-          <option value="">Send to...</option>
+        <select class="dest-select" onchange="sendTo('${esc}',this.value);this.selectedIndex=0" title="Quick send">
+          <option value="">Quick...</option>
           ${destOptions}
         </select>
+        <button class="browse-btn" onclick="showFolderPicker('${esc}')" title="Browse & move">&#x1f4c2;</button>
       </td>
     </tr>`;
   }).join('');
@@ -5113,7 +5907,7 @@ function renderDownloadsHTML() {
 
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
-<title>Downloads | PracticeLife</title>
+<title>Files | PracticeLife</title>
 <meta http-equiv="refresh" content="30">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
@@ -5200,30 +5994,149 @@ td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
 @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
 
 .timestamp { color:#333; font-size:11px; text-align:right; margin-top:16px; }
+
+/* Night mode badge */
+.night-badge { display:inline-block; padding:3px 10px; border-radius:4px; font-size:11px; margin-left:8px; }
+.night-badge.active { background:#00ff8822; color:#00ff88; border:1px solid #00ff8844; }
+.night-badge.inactive { background:#ffaa0022; color:#ffaa00; border:1px solid #ffaa0044; }
+
+/* Preview panel */
+.preview-btn { background:none; border:none; cursor:pointer; font-size:14px; opacity:0.4; padding:0; }
+.preview-btn:hover { opacity:1; }
+.fname-click { cursor:pointer; color:#ccc; }
+.fname-click:hover { color:#00ff88; text-decoration:underline; }
+.preview-panel { display:none; position:fixed; top:0; right:0; width:50vw; height:100vh; background:#0d0d0d; border-left:2px solid #222; z-index:50; overflow:auto; }
+.preview-panel.active { display:block; }
+.preview-header { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid #222; }
+.preview-header h3 { color:#00ff88; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.preview-close { background:none; border:1px solid #333; color:#ff4444; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:14px; }
+.preview-meta { padding:8px 16px; font-size:11px; color:#888; display:flex; flex-wrap:wrap; gap:12px; border-bottom:1px solid #1a1a1a; }
+.preview-meta .meta-item { display:flex; gap:4px; }
+.preview-meta .meta-label { color:#555; }
+.preview-meta .meta-value { color:#ccc; }
+.preview-content { padding:16px; }
+.preview-content iframe { width:100%; height:calc(100vh - 120px); border:none; border-radius:4px; }
+.preview-content img { max-width:100%; border-radius:4px; }
+
+/* Tags */
+.tag-row { display:flex; flex-wrap:wrap; gap:3px; margin-top:3px; }
+.tag-chip { font-size:9px; padding:1px 6px; background:#aa55ff22; color:#aa55ff; border-radius:3px; cursor:pointer; }
+.tag-chip:hover { background:#aa55ff44; }
+.add-tag-btn { font-size:9px; background:none; border:1px dashed #333; color:#555; border-radius:3px; padding:1px 4px; cursor:pointer; }
+.add-tag-btn:hover { border-color:#aa55ff; color:#aa55ff; }
+
+/* Folder picker */
+.browse-btn { background:none; border:1px solid #333; border-radius:4px; padding:2px 6px; cursor:pointer; font-size:13px; }
+.browse-btn:hover { border-color:#00ff88; }
+/* Agents bar */
+.agents-bar { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
+.agent-card { background:#111; border:1px solid #222; border-radius:8px; padding:8px 14px; display:flex; align-items:center; gap:10px; flex:1; min-width:180px; }
+.agent-icon { font-size:20px; font-weight:bold; min-width:30px; text-align:center; }
+.agent-info { flex:1; }
+.agent-name { font-size:12px; color:#e0e0e0; font-weight:bold; }
+.agent-detail { font-size:10px; color:#555; margin-top:1px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:180px; }
+.agent-dot { width:8px; height:8px; border-radius:50%; }
+
+/* Quarantine */
+.quarantine-item { display:flex; align-items:center; gap:10px; padding:6px 0; border-bottom:1px solid #1a1a1a; font-size:12px; }
+.q-date { color:#555; min-width:80px; font-size:11px; }
+.q-file { color:#ffaa00; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.q-size { color:#555; min-width:60px; text-align:right; font-size:11px; }
+
+/* Rule suggestions */
+.suggestion-card { background:#0d0d0d; border:1px solid #00aaff22; border-radius:8px; padding:10px 14px; margin-bottom:6px; cursor:pointer; }
+.suggestion-card:hover { border-color:#00aaff; background:#00aaff08; }
+.sugg-header { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
+.sugg-pattern { color:#00aaff; font-weight:bold; font-size:13px; }
+.sugg-keywords { color:#888; font-size:10px; padding:1px 6px; background:#1a1a1a; border-radius:3px; }
+.sugg-arrow { color:#00ff88; }
+.sugg-dest { color:#00ff88; font-size:12px; }
+.sugg-count { color:#555; font-size:10px; margin-left:auto; }
+.sugg-examples { color:#444; font-size:10px; margin-top:3px; }
+
+/* Pipeline Summary */
+.pipeline-summary { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+.ps-card { background:#111; border:1px solid #222; border-radius:6px; padding:6px 14px; text-align:center; cursor:pointer; transition:border-color 0.2s; min-width:80px; }
+.ps-card:hover { border-color:#00aaff; }
+.ps-num { font-size:20px; font-weight:bold; }
+.ps-label { color:#555; font-size:9px; text-transform:uppercase; letter-spacing:1px; }
+
+/* Type Filters */
+.type-filters { display:flex; gap:6px; margin-bottom:12px; flex-wrap:wrap; }
+.type-filter { background:#111; border:1px solid #222; border-radius:16px; padding:4px 12px; font-size:11px; color:#888; cursor:pointer; font-family:inherit; transition:all 0.2s; }
+.type-filter:hover { border-color:var(--filter-color, #00aaff); color:var(--filter-color, #00aaff); }
+.type-filter.active { background:var(--filter-color, #00aaff)22; border-color:var(--filter-color, #00aaff); color:var(--filter-color, #00aaff); }
+
+/* Data Sources */
+.sources-grid { display:grid; grid-template-columns:repeat(auto-fill, minmax(340px, 1fr)); gap:10px; }
+.source-card { background:#0d0d0d; border:1px solid #222; border-radius:8px; padding:12px; display:flex; gap:12px; cursor:pointer; transition:border-color 0.2s; }
+.source-card:hover { border-color:#00aaff; background:#00aaff05; }
+.source-icon { font-size:24px; min-width:32px; text-align:center; padding-top:2px; }
+.source-info { flex:1; overflow:hidden; }
+.source-name { font-size:13px; color:#e0e0e0; font-weight:bold; }
+.source-type { font-size:10px; font-weight:normal; padding:1px 6px; border-radius:3px; background:currentColor; background-clip:text; -webkit-background-clip:text; border:1px solid currentColor; opacity:0.6; margin-left:6px; }
+.source-path { font-size:10px; color:#444; margin-top:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.source-stats { font-size:11px; color:#666; margin-top:3px; }
+.source-tags { display:flex; flex-wrap:wrap; gap:3px; margin-top:4px; }
+.source-tag { font-size:9px; padding:1px 6px; background:#00aaff22; color:#00aaff; border-radius:3px; }
+
+/* Agent Activity Feed */
+.activity-feed { max-height:300px; overflow-y:auto; }
+.feed-item { display:flex; align-items:center; gap:8px; padding:4px 0; border-bottom:1px solid #111; font-size:11px; }
+.feed-dot { width:6px; height:6px; border-radius:50%; flex-shrink:0; }
+.feed-time { color:#444; min-width:70px; font-size:10px; }
+.feed-agent { color:#aa55ff; min-width:80px; font-size:10px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:120px; }
+.feed-action { color:#00aaff; min-width:50px; font-weight:bold; }
+.feed-target { color:#888; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+.feed-detail { color:#555; max-width:200px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+/* Source detail modal */
+.source-detail-modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:100; justify-content:center; align-items:center; }
+.source-detail-modal.active { display:flex; }
+.source-detail { background:#151515; border:1px solid #333; border-radius:12px; padding:24px; width:600px; max-width:90vw; max-height:80vh; overflow-y:auto; }
+
+.actions-cell { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
+.folder-list { max-height:400px; overflow-y:auto; }
+.folder-item { display:flex; align-items:center; gap:8px; padding:6px 8px; cursor:pointer; border-radius:4px; font-size:13px; color:#ccc; }
+.folder-item:hover { background:#1a1a1a; color:#00ff88; }
+.folder-item .icon { color:#ffaa00; }
+.folder-path { background:#0a0a0a; border:1px solid #333; border-radius:6px; padding:6px 10px; color:#888; font-size:12px; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
+.folder-path input { flex:1; background:none; border:none; color:#e0e0e0; font-family:inherit; font-size:12px; outline:none; }
+.folder-up { background:none; border:1px solid #333; color:#888; border-radius:4px; padding:2px 8px; cursor:pointer; font-size:11px; }
+.folder-up:hover { border-color:#00ff88; color:#00ff88; }
 </style>
 </head><body>
-${renderNav('downloads')}
-<h1>Downloads Organizer</h1>
-<div class="subtitle">File routing daemon + Playwright bridge · Rules at ~/Downloads/.download-rules.json · Scans every 60s, moves after 5 min</div>
+${renderNav('files')}
+<h1>File Management Hub <span class="night-badge ${isNightMode ? 'active' : 'inactive'}">${isNightMode ? 'AUTO-ROUTE ON (2-6am)' : 'MANUAL (auto 2-6am)'}</span></h1>
+<div class="subtitle">Daemons, agents, and skills working together · Quarantine review · Rule learning · ${data.stats.totalRules} routing rules active</div>
+
+<!-- Agents & Daemons Status Bar -->
+<div class="agents-bar">
+${agents.map(a => `  <div class="agent-card" style="border-color:${a.color}33">
+    <div class="agent-icon" style="color:${a.color}">${a.icon}</div>
+    <div class="agent-info">
+      <div class="agent-name">${a.name}</div>
+      <div class="agent-detail">${a.detail}</div>
+    </div>
+    <div class="agent-dot" style="background:${a.status === 'running' || a.status === 'mounted' || a.status === 'active' || a.status === 'stored' || a.status === 'loaded' ? a.color : '#555'}"></div>
+  </div>`).join('\n')}
+</div>
 
 <div class="summary">
-  <div class="scard ${data.stats.daemonRunning ? 'daemon-on' : 'daemon-off'}">
-    <div class="num">${data.stats.daemonRunning ? 'ON' : 'OFF'}</div>
-    <div class="label">Daemon</div>
-  </div>
-  <div class="scard"><div class="num" style="color:#ffaa00">${data.stats.totalPending}</div><div class="label">In Downloads</div></div>
-  <div class="scard"><div class="num" style="color:#00ff88">${data.stats.totalMoved}</div><div class="label">Moved (log)</div></div>
+  <div class="scard"><div class="num" style="color:#ffaa00">${data.stats.totalPending}</div><div class="label">Pending</div></div>
+  <div class="scard"><div class="num" style="color:#00ff88">${data.stats.totalMoved}</div><div class="label">Routed</div></div>
   <div class="scard"><div class="num" style="color:#ff4444">${data.stats.totalNoRule}</div><div class="label">No Rule</div></div>
   <div class="scard"><div class="num" style="color:#00aaff">${data.stats.totalRules}</div><div class="label">Rules</div></div>
   <div class="scard"><div class="num" style="color:#aa55ff">${data.stats.totalCorrections}</div><div class="label">Corrections</div></div>
   <div class="scard"><div class="num" style="color:#ff6600">${data.stats.playwrightBridged}</div><div class="label">PW Bridged</div></div>
+  <div class="scard"><div class="num" style="color:${quarantine.length > 0 ? '#ffaa00' : '#555'}">${quarantine.length}</div><div class="label">Quarantine</div></div>
 </div>
 
 <div class="grid">
   <div class="panel">
     <h2 style="color:#ffaa00">Pending Files (~/Downloads/)</h2>
     <table>
-      <tr><th>File</th><th>Size</th><th>Countdown</th><th>Will Match</th><th></th></tr>
+      <tr><th>File</th><th>Size</th><th>Night Rule</th><th>Actions</th></tr>
       ${pendingRows || '<tr><td colspan="5" style="color:#555;text-align:center;padding:20px">Downloads folder is empty</td></tr>'}
     </table>
   </div>
@@ -5232,6 +6145,86 @@ ${renderNav('downloads')}
     <h2 style="color:#00ff88">Recent Activity</h2>
     ${activityItems || '<div style="color:#555;text-align:center;padding:20px">No recent activity in log</div>'}
     ${noRuleItems.length ? `<h2 style="color:#ff4444;margin-top:16px">Unmatched Files</h2>${noRuleHTML}` : ''}
+  </div>
+</div>
+
+<!-- Data Sources Registry -->
+<div style="margin-top:20px">
+  <h2 style="color:#00aaff">Data Sources <span style="color:#555;font-size:12px;font-weight:normal">(${sources.length} discovered)</span></h2>
+  <div style="color:#555;font-size:11px;margin-bottom:12px">Click a source to annotate, tag, or connect to a processing pipeline. Agents use this registry to discover data for flows.</div>
+
+  <!-- Pipeline Status Summary -->
+  <div class="pipeline-summary">
+    ${(() => {
+      const counts = { complete: 0, active: 0, available: 0, none: 0 };
+      let totalFiles = 0, totalSize = '';
+      sources.forEach(s => { counts[s.pipelineStatus] = (counts[s.pipelineStatus] || 0) + 1; totalFiles += (s.fileCount || 0); });
+      return `<div class="ps-card" onclick="filterSources('all')"><div class="ps-num" style="color:#00aaff">${sources.length}</div><div class="ps-label">Total</div></div>
+        <div class="ps-card" onclick="filterSources('complete')"><div class="ps-num" style="color:#00ff88">${counts.complete}</div><div class="ps-label">Complete</div></div>
+        <div class="ps-card" onclick="filterSources('active')"><div class="ps-num" style="color:#00aaff">${counts.active}</div><div class="ps-label">Active</div></div>
+        <div class="ps-card" onclick="filterSources('available')"><div class="ps-num" style="color:#ffaa00">${counts.available}</div><div class="ps-label">Available</div></div>
+        <div class="ps-card" onclick="filterSources('none')"><div class="ps-num" style="color:#ff4444">${counts.none}</div><div class="ps-label">No Pipeline</div></div>
+        <div class="ps-card"><div class="ps-num" style="color:#e0e0e0">${totalFiles > 1000000 ? (totalFiles / 1000000).toFixed(1) + 'M' : totalFiles > 1000 ? Math.round(totalFiles / 1000) + 'K' : totalFiles}</div><div class="ps-label">Total Files</div></div>`;
+    })()}
+  </div>
+
+  <!-- Type Filters -->
+  <div class="type-filters">
+    <button class="type-filter active" data-type="all" onclick="filterByType('all')">All</button>
+    ${(() => {
+      const typeCounts = {};
+      sources.forEach(s => { typeCounts[s.type] = (typeCounts[s.type] || 0) + 1; });
+      const typeColors2 = { contacts: '#ff6600', email: '#ffaa00', photos: '#00aaff', voice: '#aa55ff', documents: '#00ff88', financial: '#00ff88', archives: '#555', calendar: '#ff66aa', tasks: '#ff9900', automation: '#66ccff' };
+      return Object.entries(typeCounts).sort((a,b) => b[1] - a[1]).map(([type, count]) =>
+        `<button class="type-filter" data-type="${type}" onclick="filterByType('${type}')" style="--filter-color:${typeColors2[type] || '#555'}">${type} (${count})</button>`
+      ).join('');
+    })()}
+  </div>
+
+  <div class="sources-grid" id="sourcesGrid">
+    ${sources.length > 0 ? sources.map(s => {
+      const typeColors = { contacts: '#ff6600', email: '#ffaa00', photos: '#00aaff', voice: '#aa55ff', documents: '#00ff88', financial: '#00ff88', code: '#888', archives: '#555', calendar: '#ff66aa', tasks: '#ff9900', automation: '#66ccff' };
+      const typeIcons = { contacts: '&#x1F464;', email: '&#x2709;', photos: '&#x1F4F7;', voice: '&#x1F3A4;', documents: '&#x1F4C4;', financial: '&#x1F4B0;', code: '&#x2699;', archives: '&#x1F4E6;', calendar: '&#x1F4C5;', tasks: '&#x2705;', automation: '&#x26A1;' };
+      const color = typeColors[s.type] || '#555';
+      const icon = typeIcons[s.type] || '&#x1F4C1;';
+      const pipeline = s.pipelineStatus === 'complete' ? '<span style="color:#00ff88">complete</span>'
+        : s.pipelineStatus === 'active' ? '<span style="color:#00aaff">active</span>'
+        : s.pipelineStatus === 'available' ? '<span style="color:#ffaa00">available</span>'
+        : '<span style="color:#555">none</span>';
+      const shortPath = (s.path || '').replace(process.env.HOME, '~');
+      const escId = (s.id || '').replace(/'/g, "\\'");
+      const tagChips = (s.tags || []).map(t => `<span class="source-tag">${t}</span>`).join('');
+      return `<div class="source-card" style="border-color:${color}33" data-type="${s.type}" data-pipeline="${s.pipelineStatus}" onclick="showSourceDetail('${escId}')">
+        <div class="source-icon" style="color:${color}">${icon}</div>
+        <div class="source-info">
+          <div class="source-name">${s.name} <span class="source-type" style="color:${color}">${s.type}</span></div>
+          <div class="source-path" title="${s.path}">${shortPath}</div>
+          <div class="source-stats">${(s.fileCount || 0).toLocaleString()} files · ${s.sizeHuman || '?'} · pipeline: ${pipeline}</div>
+          ${tagChips ? `<div class="source-tags">${tagChips}</div>` : ''}
+        </div>
+      </div>`;
+    }).join('') : '<div style="color:#555;text-align:center;padding:20px">Scanning filesystem... Data sources will appear here shortly.</div>'}
+  </div>
+</div>
+
+<!-- Agent Activity Feed -->
+<div style="margin-top:20px">
+  <h2 style="color:#aa55ff">Agent Activity Feed <span style="color:#555;font-size:12px;font-weight:normal">(live)</span></h2>
+  <div style="color:#555;font-size:11px;margin-bottom:8px">Real-time log of what Claude agents are doing with your files. Auto-refreshes every 30s.</div>
+  <div class="activity-feed">
+    ${activityFeed.length > 0 ? activityFeed.slice(0, 20).map(a => {
+      const statusColor = a.status === 'done' ? '#00ff88' : a.status === 'running' ? '#00aaff' : a.status === 'error' ? '#ff4444' : '#555';
+      const time = new Date(a.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+      const shortTarget = (a.target || '').replace(process.env.HOME, '~');
+      return `<div class="feed-item">
+        <span class="feed-dot" style="background:${statusColor}"></span>
+        <span class="feed-time">${time}</span>
+        <span class="feed-agent">${a.agent || '?'}</span>
+        <span class="feed-action">${a.action || '?'}</span>
+        <span class="feed-target" title="${a.target}">${shortTarget.length > 40 ? shortTarget.slice(0, 37) + '...' : shortTarget}</span>
+        <span class="feed-detail">${(a.detail || '').length > 50 ? a.detail.slice(0, 47) + '...' : a.detail || ''}</span>
+      </div>`;
+    }).join('') : '<div style="color:#555;text-align:center;padding:12px">No agent activity yet</div>'}
   </div>
 </div>
 
@@ -5254,6 +6247,42 @@ ${data.corrections.length ? `<div style="margin-top:20px">
       <span style="color:#ff4444">${shortFrom}</span>
       <span style="color:#aa55ff">→</span>
       <span style="color:#00ff88">${shortTo}</span>
+    </div>`;
+  }).join('')}
+</div>` : ''}
+
+${quarantine.length > 0 ? `<div style="margin-top:20px">
+  <h2 style="color:#ffaa00">Quarantine Review (${quarantine.length} files)</h2>
+  <div style="color:#555;font-size:11px;margin-bottom:12px">Files moved here by agents for your review. Restore to Downloads or delete permanently.</div>
+  ${quarantine.map(q => {
+    const escPath = q.path.replace(/'/g, "\\'");
+    const shortSize = q.size > 1048576 ? (q.size / 1048576).toFixed(1) + ' MB' : q.size > 1024 ? (q.size / 1024).toFixed(1) + ' KB' : q.size + ' B';
+    return `<div class="quarantine-item">
+      <span class="q-date">${q.date}</span>
+      <span class="q-file" title="${q.filename}">${q.filename.length > 40 ? q.filename.slice(0, 37) + '...' : q.filename}</span>
+      <span class="q-size">${shortSize}</span>
+      <button class="small-btn" onclick="restoreQuarantine('${escPath}')" style="color:#00ff88;border-color:#00ff8844">Restore</button>
+      <button class="small-btn" onclick="deleteQuarantine('${escPath}','${q.filename.replace(/'/g, "\\'")}')" style="color:#ff4444;border-color:#ff444444">Delete</button>
+    </div>`;
+  }).join('')}
+</div>` : ''}
+
+${suggestions.length > 0 ? `<div style="margin-top:20px">
+  <h2 style="color:#00aaff">Rule Suggestions (from corrections)</h2>
+  <div style="color:#555;font-size:11px;margin-bottom:12px">Based on ${data.stats.totalCorrections} manual corrections. Click to create a rule.</div>
+  ${suggestions.map(s => {
+    const escPattern = s.pattern.replace(/'/g, "\\'");
+    const escContains = JSON.stringify(s.contains).replace(/'/g, "\\'");
+    const escDest = s.destination.replace(/'/g, "\\'");
+    return `<div class="suggestion-card" onclick="createFromSuggestion('${escPattern}',${escContains},'${escDest}')">
+      <div class="sugg-header">
+        <span class="sugg-pattern">${s.pattern}</span>
+        ${s.contains.length ? `<span class="sugg-keywords">contains: ${s.contains.join(', ')}</span>` : ''}
+        <span class="sugg-arrow">→</span>
+        <span class="sugg-dest">${s.destination}</span>
+        <span class="sugg-count">${s.count}x</span>
+      </div>
+      <div class="sugg-examples">e.g. ${s.examples.map(e => e.length > 30 ? e.slice(0, 27) + '...' : e).join(', ')}</div>
     </div>`;
   }).join('')}
 </div>` : ''}
@@ -5283,7 +6312,67 @@ ${data.corrections.length ? `<div style="margin-top:20px">
 
 <div class="toast" id="toast"></div>
 
-<div class="timestamp">${data.timestamp} · Auto-refresh 30s · Daemon rescans every 60s</div>
+<!-- Preview Panel (slide-in from right) -->
+<div class="preview-panel" id="previewPanel">
+  <div class="preview-header">
+    <h3 id="previewTitle">Preview</h3>
+    <button class="preview-close" onclick="closePreview()">X</button>
+  </div>
+  <div class="preview-meta" id="previewMeta"></div>
+  <div class="preview-content" id="previewContent"></div>
+</div>
+
+<!-- Source Detail Modal -->
+<div class="source-detail-modal" id="sourceModal">
+  <div class="source-detail">
+    <h3 style="color:#00aaff;margin-bottom:16px" id="sourceModalTitle">Source Detail</h3>
+    <div id="sourceModalBody"></div>
+    <div style="margin-top:16px">
+      <label style="display:block;color:#888;font-size:11px;margin-bottom:4px;text-transform:uppercase;letter-spacing:1px">Tags (comma-separated)</label>
+      <input id="sourceTagsInput" style="width:100%;background:#0a0a0a;border:1px solid #333;color:#e0e0e0;padding:8px 12px;border-radius:6px;font-family:inherit;font-size:13px" placeholder="e.g. contacts, importable, needs-dedup">
+      <label style="display:block;color:#888;font-size:11px;margin-bottom:4px;margin-top:12px;text-transform:uppercase;letter-spacing:1px">Pipeline Target</label>
+      <select id="sourcePipelineInput" style="width:100%;background:#0a0a0a;border:1px solid #333;color:#e0e0e0;padding:8px 12px;border-radius:6px;font-family:inherit;font-size:13px">
+        <option value="">None</option>
+        <option value="contact-dedup">Contact Dedup</option>
+        <option value="memoryatlas">MemoryAtlas</option>
+        <option value="era-metadata">ERA Metadata</option>
+        <option value="email-import">Email Import</option>
+        <option value="photo-index">Photo Index</option>
+        <option value="financial-review">Financial Review</option>
+        <option value="vault-import">Vault Import</option>
+        <option value="vault-sync">Vault Sync</option>
+        <option value="timeline-enrichment">Timeline Enrichment</option>
+        <option value="daily-planning">Daily Planning</option>
+        <option value="contact-extraction">Contact Extraction</option>
+        <option value="document-index">Document Index</option>
+      </select>
+      <label style="display:block;color:#888;font-size:11px;margin-bottom:4px;margin-top:12px;text-transform:uppercase;letter-spacing:1px">Notes</label>
+      <textarea id="sourceNotesInput" rows="3" style="width:100%;background:#0a0a0a;border:1px solid #333;color:#e0e0e0;padding:8px 12px;border-radius:6px;font-family:inherit;font-size:13px;resize:vertical" placeholder="What's in here? What should agents know?"></textarea>
+    </div>
+    <div style="display:flex;gap:8px;margin-top:16px;justify-content:flex-end">
+      <button onclick="closeSourceModal()" style="padding:8px 16px;border-radius:6px;border:1px solid #333;background:#1a1a1a;color:#e0e0e0;cursor:pointer;font-family:inherit;font-size:13px">Cancel</button>
+      <button onclick="saveSourceAnnotation()" style="padding:8px 16px;border-radius:6px;border:1px solid #00aaff;background:#00aaff22;color:#00aaff;cursor:pointer;font-family:inherit;font-size:13px">Save</button>
+    </div>
+  </div>
+</div>
+
+<!-- Folder Picker Modal -->
+<div class="modal-overlay" id="folderModal">
+  <div class="modal" style="width:600px">
+    <h3>Move <span id="folderFilename" style="color:#ffaa00"></span> to...</h3>
+    <div class="folder-path">
+      <button class="folder-up" onclick="folderUp()">&#x2191; Up</button>
+      <input id="folderPathInput" onkeydown="if(event.key==='Enter')browseTo(this.value)" placeholder="Type path or browse...">
+    </div>
+    <div class="folder-list" id="folderList"></div>
+    <div class="modal-actions">
+      <button onclick="closeFolderModal()">Cancel</button>
+      <button class="primary" onclick="confirmMove()">Move Here</button>
+    </div>
+  </div>
+</div>
+
+<div class="timestamp">${data.timestamp} · Auto-refresh 30s · ${isNightMode ? 'Night auto-route active' : 'Day mode — manual sorting'}</div>
 
 <script>
 function toast(msg, isError) {
@@ -5399,6 +6488,269 @@ async function saveRule() {
 document.getElementById('ruleModal').addEventListener('click', (e) => {
   if (e.target === document.getElementById('ruleModal')) closeModal();
 });
+document.getElementById('folderModal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('folderModal')) closeFolderModal();
+});
+
+// ─── Preview Panel ───
+async function showPreview(filename) {
+  const panel = document.getElementById('previewPanel');
+  const title = document.getElementById('previewTitle');
+  const meta = document.getElementById('previewMeta');
+  const content = document.getElementById('previewContent');
+
+  title.textContent = filename;
+  meta.innerHTML = '<span style="color:#555">Loading metadata...</span>';
+  content.innerHTML = '';
+  panel.classList.add('active');
+
+  // Fetch metadata
+  try {
+    const r = await fetch('/api/downloads/meta/' + encodeURIComponent(filename));
+    const m = await r.json();
+    let metaHTML = '';
+    metaHTML += '<div class="meta-item"><span class="meta-label">Size:</span><span class="meta-value">' + formatBytes(m.size) + '</span></div>';
+    metaHTML += '<div class="meta-item"><span class="meta-label">Type:</span><span class="meta-value">' + (m.mime || m.ext) + '</span></div>';
+    if (m.pdfTitle) metaHTML += '<div class="meta-item"><span class="meta-label">PDF Title:</span><span class="meta-value" style="color:#00ff88">' + m.pdfTitle + '</span></div>';
+    if (m.pdfPages) metaHTML += '<div class="meta-item"><span class="meta-label">Pages:</span><span class="meta-value">' + m.pdfPages + '</span></div>';
+    if (m.pdfDate) metaHTML += '<div class="meta-item"><span class="meta-label">PDF Date:</span><span class="meta-value" style="color:#ffaa00">' + m.pdfDate + '</span></div>';
+    if (m.imgWidth) metaHTML += '<div class="meta-item"><span class="meta-label">Dimensions:</span><span class="meta-value">' + m.imgWidth + 'x' + m.imgHeight + '</span></div>';
+    if (m.tags && m.tags.length) metaHTML += '<div class="meta-item"><span class="meta-label">Tags:</span><span class="meta-value">' + m.tags.join(', ') + '</span></div>';
+    metaHTML += '<div class="meta-item"><span class="meta-label">Modified:</span><span class="meta-value">' + new Date(m.modified).toLocaleString() + '</span></div>';
+    meta.innerHTML = metaHTML;
+  } catch (e) {
+    meta.innerHTML = '<span style="color:#ff4444">Failed to load metadata</span>';
+  }
+
+  // Render preview
+  const ext = filename.split('.').pop().toLowerCase();
+  if (ext === 'pdf') {
+    content.innerHTML = '<iframe src="/api/downloads/preview/' + encodeURIComponent(filename) + '"></iframe>';
+  } else if (['png','jpg','jpeg','gif','webp','svg'].includes(ext)) {
+    content.innerHTML = '<img src="/api/downloads/preview/' + encodeURIComponent(filename) + '" alt="' + filename + '">';
+  } else if (['txt','md','json','csv'].includes(ext)) {
+    try {
+      const r = await fetch('/api/downloads/preview/' + encodeURIComponent(filename));
+      const text = await r.text();
+      content.innerHTML = '<pre style="color:#ccc;font-size:12px;white-space:pre-wrap;max-height:80vh;overflow:auto">' + text.substring(0, 10000).replace(/</g,'&lt;') + '</pre>';
+    } catch { content.innerHTML = '<div style="color:#555">Cannot preview this file</div>'; }
+  } else {
+    content.innerHTML = '<div style="color:#555;text-align:center;padding:40px">No preview available for .' + ext + ' files</div>';
+  }
+}
+
+function closePreview() { document.getElementById('previewPanel').classList.remove('active'); }
+
+function formatBytes(bytes) {
+  if (bytes > 1073741824) return (bytes / 1073741824).toFixed(1) + ' GB';
+  if (bytes > 1048576) return (bytes / 1048576).toFixed(1) + ' MB';
+  if (bytes > 1024) return (bytes / 1024).toFixed(1) + ' KB';
+  return bytes + ' B';
+}
+
+// ─── Tags ───
+async function promptTag(filename) {
+  const tag = prompt('Add tag to ' + filename + ':');
+  if (!tag || !tag.trim()) return;
+  const existing = ${JSON.stringify(data.tags)};
+  const tags = [...(existing[filename] || []), tag.trim()];
+  const r = await api('/api/downloads/tags', { filename, tags });
+  if (r.ok) { toast('Tagged: ' + tag.trim()); setTimeout(() => location.reload(), 500); }
+  else toast(r.error, true);
+}
+
+async function removeTag(filename, tag) {
+  const existing = ${JSON.stringify(data.tags)};
+  const tags = (existing[filename] || []).filter(t => t !== tag);
+  const r = await api('/api/downloads/tags', { filename, tags });
+  if (r.ok) { toast('Removed tag: ' + tag); setTimeout(() => location.reload(), 500); }
+  else toast(r.error, true);
+}
+
+// ─── Folder Picker ───
+let folderPickerFile = '';
+let folderPickerPath = '${process.env.HOME}';
+
+function showFolderPicker(filename) {
+  folderPickerFile = filename;
+  document.getElementById('folderFilename').textContent = filename;
+  document.getElementById('folderModal').classList.add('active');
+  browseTo(folderPickerPath);
+}
+
+function closeFolderModal() { document.getElementById('folderModal').classList.remove('active'); }
+
+async function browseTo(dir) {
+  folderPickerPath = dir;
+  document.getElementById('folderPathInput').value = dir.replace('${process.env.HOME}', '~');
+  const list = document.getElementById('folderList');
+  list.innerHTML = '<div style="color:#555;padding:12px">Loading...</div>';
+  try {
+    const r = await fetch('/api/downloads/browse?path=' + encodeURIComponent(dir));
+    const d = await r.json();
+    if (d.error) { list.innerHTML = '<div style="color:#ff4444;padding:12px">' + d.error + '</div>'; return; }
+    folderPickerPath = d.path;
+    document.getElementById('folderPathInput').value = d.path.replace('${process.env.HOME}', '~');
+    let html = '';
+    for (const entry of d.entries) {
+      html += '<div class="folder-item" ondblclick="browseTo(\\'' + d.path.replace(/'/g, "\\\\'") + '/' + entry.name.replace(/'/g, "\\\\'") + '\\')" onclick="selectFolder(this, \\'' + d.path.replace(/'/g, "\\\\'") + '/' + entry.name.replace(/'/g, "\\\\'") + '\\')">';
+      html += '<span class="icon">&#x1f4c1;</span><span>' + entry.name + '</span></div>';
+    }
+    if (!d.entries.length) html = '<div style="color:#555;padding:12px;text-align:center">Empty directory</div>';
+    list.innerHTML = html;
+  } catch (e) {
+    list.innerHTML = '<div style="color:#ff4444;padding:12px">Error: ' + e.message + '</div>';
+  }
+}
+
+function selectFolder(el, path) {
+  document.querySelectorAll('.folder-item').forEach(i => i.style.background = '');
+  el.style.background = '#00ff8822';
+  folderPickerPath = path;
+  document.getElementById('folderPathInput').value = path.replace('${process.env.HOME}', '~');
+}
+
+function folderUp() {
+  const parts = folderPickerPath.split('/');
+  if (parts.length > 2) { parts.pop(); browseTo(parts.join('/')); }
+}
+
+async function confirmMove() {
+  const dest = folderPickerPath;
+  if (!dest) return;
+  const r = await api('/api/downloads/moveto', { filename: folderPickerFile, destination: dest });
+  if (r.ok) { toast('Moved: ' + folderPickerFile + ' -> ' + dest.replace('${process.env.HOME}', '~')); closeFolderModal(); setTimeout(() => location.reload(), 800); }
+  else toast(r.error, true);
+}
+
+// ─── Source Filters ───
+function filterSources(pipeline) {
+  const cards = document.querySelectorAll('#sourcesGrid .source-card');
+  cards.forEach(c => {
+    if (pipeline === 'all') { c.style.display = ''; return; }
+    c.style.display = c.dataset.pipeline === pipeline ? '' : 'none';
+  });
+}
+
+function filterByType(type) {
+  document.querySelectorAll('.type-filter').forEach(b => b.classList.remove('active'));
+  document.querySelector('.type-filter[data-type="' + type + '"]').classList.add('active');
+  const cards = document.querySelectorAll('#sourcesGrid .source-card');
+  cards.forEach(c => {
+    if (type === 'all') { c.style.display = ''; return; }
+    c.style.display = c.dataset.type === type ? '' : 'none';
+  });
+}
+
+// ─── Source Detail ───
+const allSources = ${JSON.stringify(sources)};
+let currentSourceId = null;
+
+function showSourceDetail(id) {
+  const s = allSources.find(x => x.id === id);
+  if (!s) return;
+  currentSourceId = id;
+  document.getElementById('sourceModalTitle').textContent = s.name + ' (' + s.type + ')';
+  const shortPath = (s.path || '').replace('${process.env.HOME}', '~');
+
+  // Build rich detail view
+  const pipelineColors = { complete: '#00ff88', active: '#00aaff', available: '#ffaa00', none: '#ff4444' };
+  const pColor = pipelineColors[s.pipelineStatus] || '#555';
+  let html = '<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;margin-bottom:12px">';
+  html += '<span style="color:#555">Path:</span><span style="color:#888;user-select:all">' + shortPath + '</span>';
+  html += '<span style="color:#555">Files:</span><span style="color:#ccc">' + (s.fileCount || 0).toLocaleString() + '</span>';
+  html += '<span style="color:#555">Size:</span><span style="color:#ccc">' + (s.sizeHuman || '?') + '</span>';
+  if (s.formats && s.formats.length) html += '<span style="color:#555">Formats:</span><span style="color:#888">' + s.formats.join(', ') + '</span>';
+  html += '<span style="color:#555">Pipeline:</span><span style="color:' + pColor + ';font-weight:bold">' + (s.pipelineStatus || 'none').toUpperCase() + (s.pipelineTarget ? ' → ' + s.pipelineTarget : '') + '</span>';
+  if (s.lastUpdated) html += '<span style="color:#555">Updated:</span><span style="color:#888">' + new Date(s.lastUpdated).toLocaleString() + '</span>';
+  html += '</div>';
+
+  // Related sources (same type or shared tags)
+  const related = allSources.filter(r => r.id !== s.id && (r.type === s.type || (s.tags || []).some(t => (r.tags || []).includes(t))));
+  if (related.length > 0) {
+    html += '<div style="margin-bottom:8px"><span style="color:#555;font-size:10px;text-transform:uppercase;letter-spacing:1px">Related Sources</span>';
+    html += '<div style="display:flex;flex-wrap:wrap;gap:4px;margin-top:4px">';
+    related.slice(0, 6).forEach(r => {
+      html += '<span style="font-size:10px;padding:2px 8px;background:#1a1a1a;border:1px solid #222;border-radius:4px;color:#888;cursor:pointer" onclick="closeSourceModal();showSourceDetail(\\'' + r.id + '\\')">' + r.name + '</span>';
+    });
+    html += '</div></div>';
+  }
+
+  if (s.notes) html += '<div style="color:#666;font-size:11px;background:#0a0a0a;padding:8px;border-radius:4px;margin-bottom:8px">' + s.notes + '</div>';
+  document.getElementById('sourceModalBody').innerHTML = html;
+  document.getElementById('sourceTagsInput').value = (s.tags || []).join(', ');
+  document.getElementById('sourcePipelineInput').value = s.pipelineTarget || '';
+  document.getElementById('sourceNotesInput').value = s.notes || '';
+  document.getElementById('sourceModal').classList.add('active');
+}
+
+function closeSourceModal() { document.getElementById('sourceModal').classList.remove('active'); }
+
+async function saveSourceAnnotation() {
+  if (!currentSourceId) return;
+  const tags = document.getElementById('sourceTagsInput').value.split(',').map(t => t.trim()).filter(Boolean);
+  const pipelineTarget = document.getElementById('sourcePipelineInput').value || undefined;
+  const notes = document.getElementById('sourceNotesInput').value || undefined;
+  const r = await api('/api/files/sources/annotate', { id: currentSourceId, tags, pipelineTarget, notes });
+  if (r.ok) { toast('Source updated'); closeSourceModal(); setTimeout(() => location.reload(), 800); }
+  else toast(r.error || 'Failed', true);
+}
+
+document.getElementById('sourceModal').addEventListener('click', (e) => {
+  if (e.target === document.getElementById('sourceModal')) closeSourceModal();
+});
+
+// ─── Quarantine Actions ───
+async function restoreQuarantine(filepath) {
+  const r = await api('/api/files/quarantine/restore', { filepath, destination: '${DOWNLOADS_DIR}' });
+  if (r.ok) { toast('Restored from quarantine'); setTimeout(() => location.reload(), 800); }
+  else toast(r.error, true);
+}
+
+async function deleteQuarantine(filepath, filename) {
+  if (!confirm('Permanently delete ' + filename + ' from quarantine?')) return;
+  const r = await api('/api/files/quarantine/delete', { filepath });
+  if (r.ok) { toast('Deleted from quarantine'); setTimeout(() => location.reload(), 800); }
+  else toast(r.error, true);
+}
+
+// ─── Create Rule from Suggestion ───
+function createFromSuggestion(pattern, contains, destination) {
+  document.getElementById('ruleIndex').value = '-1';
+  document.getElementById('modalTitle').textContent = 'Create Rule from Suggestion';
+  document.getElementById('ruleName').value = '';
+  document.getElementById('rulePatterns').value = pattern;
+  document.getElementById('ruleContains').value = (contains || []).join(', ');
+  document.getElementById('ruleExclude').value = '';
+  document.getElementById('ruleDest').value = destination;
+  document.getElementById('ruleAction').value = 'move';
+  document.getElementById('ruleModal').classList.add('active');
+  document.getElementById('ruleName').focus();
+}
+
+// Close preview on Escape
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') { closePreview(); closeFolderModal(); closeModal(); closeSourceModal(); }
+});
+
+// Auto-refresh activity feed every 30s
+setInterval(async () => {
+  try {
+    const r = await fetch('/api/files/activity');
+    const data = await r.json();
+    if (data.activity && data.activity.length > 0) {
+      const feed = document.querySelector('.activity-feed');
+      if (!feed) return;
+      const statusColors = { done: '#00ff88', running: '#00aaff', error: '#ff4444' };
+      feed.innerHTML = data.activity.slice(0, 20).map(a => {
+        const sc = statusColors[a.status] || '#555';
+        const time = new Date(a.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+        const shortTarget = (a.target || '').replace('${process.env.HOME}', '~');
+        return '<div class="feed-item"><span class="feed-dot" style="background:' + sc + '"></span><span class="feed-time">' + time + '</span><span class="feed-agent">' + (a.agent || '?') + '</span><span class="feed-action">' + (a.action || '?') + '</span><span class="feed-target" title="' + (a.target || '') + '">' + (shortTarget.length > 40 ? shortTarget.slice(0, 37) + '...' : shortTarget) + '</span><span class="feed-detail">' + ((a.detail || '').length > 50 ? a.detail.slice(0, 47) + '...' : a.detail || '') + '</span></div>';
+      }).join('');
+    }
+  } catch(e) { /* silent fail */ }
+}, 30000);
 </script>
 </body></html>`;
 }
