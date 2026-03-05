@@ -422,7 +422,7 @@ function workerDotClass(status) {
 }
 
 function workerStatusColor(dotCls) {
-  if (dotCls === 'live') return '#00ff88';
+  if (dotCls === 'live') return '#22c55e';
   if (dotCls === 'parked') return '#ffaa00';
   if (dotCls === 'down') return '#ff4444';
   return '#555';
@@ -430,36 +430,76 @@ function workerStatusColor(dotCls) {
 
 // ─── Shared Navigation Bar ──────────────────────────────────────────────────
 
-function renderNav(activePage = 'dashboard') {
-  const pages = [
-    { path: '/', name: 'Dashboard', key: 'dashboard' },
-    { path: '/command', name: 'Command', key: 'command' },
-    { path: '/machines', name: 'Machines', key: 'machines' },
-    { path: '/briefing', name: 'Briefing', key: 'briefing' },
-    { path: '/blockers', name: 'Convergence', key: 'blockers' },
-    { path: '/agents', name: 'Agents', key: 'agents' },
-    { path: '/threads', name: 'Threads', key: 'threads' },
-    { path: '/fleet', name: 'Fleet', key: 'fleet' },
-    { path: '/stream', name: 'Life Stream', key: 'stream' },
-    { path: '/deps', name: 'Dependencies', key: 'deps' },
-    { path: '/plan', name: 'Plan Tracker', key: 'plan' },
-    { path: '/endpoints', name: 'API', key: 'endpoints' },
-    { path: '/philological', name: 'Philological', key: 'philological' },
-    { path: '/prompts', name: 'Prompts', key: 'prompts' },
-    { path: '/search', name: 'Search', key: 'search' },
-    { path: '/cheatsheet', name: 'Cheatsheet', key: 'cheatsheet' },
-    { path: '/queue', name: 'Queue', key: 'queue' },
-    { path: '/files', name: 'Files', key: 'files' },
-  ];
+// CSS for PL.OS header bar — injected into pages that don't have it
+const PLOS_NAV_CSS = `
+  /* PL.OS Header Bar */
+  .plos-header { background: #111; border-bottom: 1px solid #222; padding: 0 20px; display: flex; align-items: center; justify-content: space-between; height: 48px; position: sticky; top: 0; z-index: 100; }
+  .plos-brand { display: flex; align-items: center; gap: 10px; text-decoration: none; }
+  .plos-brand .omega { font-size: 22px; color: #ffaa00; font-family: Georgia, 'Times New Roman', serif; font-weight: bold; }
+  .plos-brand .name { font-size: 15px; color: #e0e0e0; font-weight: 600; letter-spacing: 1px; }
+  .plos-nav { display: flex; align-items: center; gap: 2px; overflow-x: auto; }
+  .plos-nav a { color: #666; font-size: 12px; padding: 6px 10px; border-radius: 6px; text-decoration: none; white-space: nowrap; transition: color 0.15s, background 0.15s; }
+  .plos-nav a:hover { color: #e0e0e0; background: #1a1a1a; }
+  .plos-nav a.active { color: #ffaa00; background: #1a1500; }
+  .plos-nav .sep { width: 1px; height: 16px; background: #222; margin: 0 4px; flex-shrink: 0; }
+  .plos-hamburger { display: none; cursor: pointer; color: #666; font-size: 22px; padding: 4px 8px; border: none; background: none; }
+  .plos-hamburger:hover { color: #ffaa00; }
+  .plos-footer { text-align: center; padding: 16px 20px; border-top: 1px solid #1a1a1a; color: #333; font-size: 11px; }
+  .plos-footer .omega-mark { color: #ffaa00; }
+  @media (max-width: 900px) {
+    .plos-nav { display: none; position: absolute; top: 48px; left: 0; right: 0; background: #111; border-bottom: 1px solid #222; flex-direction: column; padding: 8px 16px; gap: 0; }
+    .plos-nav.open { display: flex; }
+    .plos-nav a { padding: 10px 12px; font-size: 13px; border-radius: 0; border-bottom: 1px solid #1a1a1a; }
+    .plos-nav .sep { display: none; }
+    .plos-nav .nav-group-label { display: block; color: #444; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; padding: 12px 12px 4px; }
+    .plos-hamburger { display: block; }
+  }
+  @media (min-width: 901px) { .plos-nav .nav-group-label { display: none; } }
+`;
 
-  return `<div class="nav" style="display:flex;gap:16px;margin-bottom:12px">\n` +
-    pages.map(p => {
-      const isActive = p.key === activePage;
-      const color = isActive ? '#00ff88' : '#555';
-      const border = isActive ? '#00ff88' : '#222';
-      return `  <a href="${p.path}" style="color:${color};font-size:13px;padding:4px 12px;border:1px solid ${border};border-radius:6px;text-decoration:none">${p.name}</a>`;
-    }).join('\n') +
-    '\n</div>';
+const PLOS_FOOTER_HTML = '<div class="plos-footer"><span class="omega-mark">Ω₀</span> PL.OS — PracticeLife Operating System</div>' +
+  '<script>document.querySelector(".plos-hamburger")?.addEventListener("click",function(){document.querySelector(".plos-nav")?.classList.toggle("open")});document.querySelectorAll(".plos-nav a").forEach(a=>a.addEventListener("click",()=>{document.querySelector(".plos-nav")?.classList.remove("open")}));</script>';
+
+function renderNav(activePage = 'dashboard') {
+  const groups = [
+    { label: 'Core', pages: [
+      { path: '/', name: 'Home', key: 'dashboard' },
+      { path: '/command', name: 'Command', key: 'command' },
+      { path: '/machines', name: 'Machines', key: 'machines' },
+    ]},
+    { label: 'Operations', pages: [
+      { path: '/agents', name: 'Agents', key: 'agents' },
+      { path: '/fleet', name: 'Fleet', key: 'fleet' },
+      { path: '/briefing', name: 'Briefing', key: 'briefing' },
+      { path: '/queue', name: 'Queue', key: 'queue' },
+    ]},
+    { label: 'Data', pages: [
+      { path: '/stream', name: 'Stream', key: 'stream' },
+      { path: '/blockers', name: 'Convergence', key: 'blockers' },
+      { path: '/threads', name: 'Threads', key: 'threads' },
+      { path: '/deps', name: 'Dependencies', key: 'deps' },
+    ]},
+    { label: 'Reference', pages: [
+      { path: '/cheatsheet', name: 'Docs', key: 'cheatsheet' },
+      { path: '/endpoints', name: 'API', key: 'endpoints' },
+      { path: '/files', name: 'Files', key: 'files' },
+    ]},
+  ];
+  let navLinks = '';
+  for (let i = 0; i < groups.length; i++) {
+    const g = groups[i];
+    if (i > 0) navLinks += '<span class="sep"></span>';
+    navLinks += '<span class="nav-group-label">' + g.label + '</span>';
+    navLinks += g.pages.map(p => {
+      const cls = p.key === activePage ? ' class="active"' : '';
+      return '<a href="' + p.path + '"' + cls + '>' + p.name + '</a>';
+    }).join('');
+  }
+  return '<style>' + PLOS_NAV_CSS + '</style><header class="plos-header">' +
+    '<a href="/" class="plos-brand"><span class="omega">Ω₀</span><span class="name">PL.OS</span></a>' +
+    '<button class="plos-hamburger" aria-label="Menu">☰</button>' +
+    '<nav class="plos-nav">' + navLinks + '</nav>' +
+    '</header>';
 }
 
 function renderHTML(state) {
@@ -479,42 +519,43 @@ function renderHTML(state) {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<title>Ω₀ PracticeLife Dashboard</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Dashboard</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #0a0a0a; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; padding: 20px; }
-  h1 { color: #00ff88; font-size: 28px; margin-bottom: 4px; }
+  h1 { color: #ffaa00; font-size: 28px; margin-bottom: 4px; }
   .subtitle { color: #666; margin-bottom: 20px; font-size: 13px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(200px, 1fr)); gap: 16px; margin-bottom: 24px; }
   .card { background: #151515; border: 1px solid #222; border-radius: 8px; padding: 16px; transition: border-color 0.3s, box-shadow 0.3s, transform 0.15s; }
   .card.clickable { cursor: pointer; }
-  .card.clickable:hover { border-color: #00ff88; box-shadow: 0 0 16px #00ff8818; transform: translateY(-1px); }
-  .card.clickable.active { border-color: #00ff88; box-shadow: 0 0 20px #00ff8822; }
+  .card.clickable:hover { border-color: #ffaa00; box-shadow: 0 0 16px #ffaa0018; transform: translateY(-1px); }
+  .card.clickable.active { border-color: #ffaa00; box-shadow: 0 0 20px #ffaa0022; }
   .card h3 { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-  .card .value { font-size: 32px; font-weight: bold; color: #00ff88; }
+  .card .value { font-size: 32px; font-weight: bold; color: #ffaa00; }
   .card .value.warn { color: #ffaa00; }
   .card .value.crit { color: #ff4444; }
   .card .sub { color: #555; font-size: 12px; margin-top: 4px; }
   .progress-bar { width: 100%; height: 24px; background: #1a1a1a; border-radius: 12px; overflow: hidden; margin: 16px 0; border: 1px solid #333; }
-  .progress-fill { height: 100%; background: linear-gradient(90deg, #00ff88, #00cc66); transition: width 0.8s ease; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; color: #000; }
+  .progress-fill { height: 100%; background: linear-gradient(90deg, #ffaa00, #cc8800); transition: width 0.8s ease; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; color: #000; }
   table { width: 100%; border-collapse: collapse; margin-top: 12px; }
   th { text-align: left; color: #555; font-size: 11px; text-transform: uppercase; padding: 8px; border-bottom: 1px solid #222; }
   td { padding: 8px; border-bottom: 1px solid #151515; font-size: 13px; }
   tr.done td { opacity: 0.5; }
-  .status-done { color: #00ff88; }
+  .status-done { color: #22c55e; }
   .status-running { color: #00aaff; }
   .status-blocked { color: #ffaa00; }
   .status-critical { color: #ff4444; font-weight: bold; }
   .status-pending { color: #555; }
   .blocker { color: #ffaa00; font-size: 12px; }
   .volumes { display: flex; gap: 8px; flex-wrap: wrap; }
-  .vol { background: #1a2a1a; color: #00ff88; padding: 4px 10px; border-radius: 4px; font-size: 12px; border: 1px solid #00ff8833; }
+  .vol { background: #1a1a0a; color: #ffaa00; padding: 4px 10px; border-radius: 4px; font-size: 12px; border: 1px solid #ffaa0033; }
   .vol.missing { background: #2a1a1a; color: #ff4444; border-color: #ff444433; }
   .section { margin-top: 24px; }
-  .section h2 { color: #00ff88; font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #222; padding-bottom: 8px; }
-  .alignment { text-align: center; margin: 24px 0; padding: 20px; background: linear-gradient(135deg, #0a1a0a, #0a0a1a); border: 1px solid #00ff8833; border-radius: 12px; }
-  .alignment .omega { font-size: 48px; color: #00ff88; animation: breathe 4s ease-in-out infinite; }
-  .alignment .phrase { color: #00cc66; font-size: 14px; margin-top: 8px; }
+  .section h2 { color: #ffaa00; font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #222; padding-bottom: 8px; }
+  .alignment { text-align: center; margin: 24px 0; padding: 20px; background: linear-gradient(135deg, #1a150a, #0a0a1a); border: 1px solid #ffaa0033; border-radius: 12px; }
+  .alignment .omega { font-size: 48px; color: #ffaa00; animation: breathe 4s ease-in-out infinite; }
+  .alignment .phrase { color: #cc8800; font-size: 14px; margin-top: 8px; }
   .timestamp { color: #333; font-size: 11px; text-align: right; margin-top: 16px; }
   .agent-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(280px, 1fr)); gap: 12px; margin-top: 12px; }
   .agent-card { background: #0d1117; border: 1px solid #30363d; border-radius: 8px; padding: 14px; }
@@ -523,42 +564,42 @@ function renderHTML(state) {
   .agent-card .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; }
 
   /* Stoplight dot states */
-  .dot.live { background: #00ff88; box-shadow: 0 0 6px #00ff88, 0 0 12px #00ff8844; animation: pulse 2s ease-in-out infinite; }
+  .dot.live { background: #22c55e; box-shadow: 0 0 6px #22c55e, 0 0 12px #22c55e44; animation: pulse 2s ease-in-out infinite; }
   .dot.parked { background: #ffaa00; box-shadow: 0 0 4px #ffaa00, 0 0 8px #ffaa0044; animation: pulse-slow 3s ease-in-out infinite; }
   .dot.standby { background: #555; box-shadow: 0 0 2px #55555588; }
   .dot.off { background: #333; }
   .dot.down { background: #ff4444; box-shadow: 0 0 6px #ff4444, 0 0 12px #ff444444; animation: pulse-fast 1s ease-in-out infinite; }
 
-  @keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 6px #00ff88, 0 0 12px #00ff8844; } 50% { opacity: 0.6; box-shadow: 0 0 2px #00ff8844; } }
+  @keyframes pulse { 0%, 100% { opacity: 1; box-shadow: 0 0 6px #22c55e, 0 0 12px #22c55e44; } 50% { opacity: 0.6; box-shadow: 0 0 2px #22c55e44; } }
   @keyframes pulse-slow { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
   @keyframes pulse-fast { 0%, 100% { opacity: 1; box-shadow: 0 0 8px #ff4444; } 50% { opacity: 0.4; box-shadow: 0 0 2px #ff444444; } }
-  @keyframes breathe { 0%, 100% { opacity: 1; text-shadow: 0 0 20px #00ff8844; } 50% { opacity: 0.7; text-shadow: 0 0 40px #00ff8866; } }
+  @keyframes breathe { 0%, 100% { opacity: 1; text-shadow: 0 0 20px #ffaa0044; } 50% { opacity: 0.7; text-shadow: 0 0 40px #ffaa0066; } }
 
   .session-list { list-style: none; margin-top: 8px; }
   .session-list li { color: #8b949e; font-size: 11px; padding: 2px 0; border-bottom: 1px solid #161b22; }
   .session-list li:last-child { border: none; }
 
   /* Chart panel */
-  .chart-panel { display: none; background: #0d1117; border: 1px solid #00ff8844; border-radius: 12px; padding: 24px; margin: 0 0 24px 0; animation: slideDown 0.25s ease-out; }
+  .chart-panel { display: none; background: #0d1117; border: 1px solid #ffaa0044; border-radius: 12px; padding: 24px; margin: 0 0 24px 0; animation: slideDown 0.25s ease-out; }
   .chart-panel.visible { display: block; }
   .chart-panel .chart-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 16px; }
-  .chart-panel .chart-title { color: #00ff88; font-size: 16px; font-weight: bold; }
+  .chart-panel .chart-title { color: #ffaa00; font-size: 16px; font-weight: bold; }
   .chart-panel .chart-close { cursor: pointer; color: #555; font-size: 18px; padding: 4px 8px; border-radius: 4px; }
   .chart-panel .chart-close:hover { color: #ff4444; background: #1a1111; }
   .chart-panel .chart-stats { display: flex; gap: 24px; margin-bottom: 16px; flex-wrap: wrap; }
   .chart-panel .chart-stat { }
   .chart-panel .chart-stat-label { color: #555; font-size: 10px; text-transform: uppercase; letter-spacing: 1px; }
   .chart-panel .chart-stat-value { color: #e0e0e0; font-size: 20px; font-weight: bold; margin-top: 2px; }
-  .chart-panel .chart-stat-value.up { color: #00ff88; }
+  .chart-panel .chart-stat-value.up { color: #ffaa00; }
   .chart-panel .chart-stat-value.down { color: #ff4444; }
   .chart-panel .chart-stat-value.flat { color: #555; }
   .chart-panel svg { width: 100%; height: 160px; }
-  .chart-panel .sparkline { fill: none; stroke: #00ff88; stroke-width: 2; }
+  .chart-panel .sparkline { fill: none; stroke: #ffaa00; stroke-width: 2; }
   .chart-panel .sparkfill { fill: url(#sparkGrad); stroke: none; opacity: 0.3; }
-  .chart-panel .projection { fill: none; stroke: #00ff88; stroke-width: 1.5; stroke-dasharray: 6,4; opacity: 0.5; }
+  .chart-panel .projection { fill: none; stroke: #ffaa00; stroke-width: 1.5; stroke-dasharray: 6,4; opacity: 0.5; }
   .chart-panel .grid-line { stroke: #222; stroke-width: 0.5; }
   .chart-panel .axis-label { fill: #444; font-size: 10px; font-family: 'SF Mono', monospace; }
-  .chart-panel .data-dot { fill: #00ff88; r: 3; opacity: 0; transition: opacity 0.15s; }
+  .chart-panel .data-dot { fill: #ffaa00; r: 3; opacity: 0; transition: opacity 0.15s; }
   .chart-panel svg:hover .data-dot { opacity: 1; }
 
   @keyframes slideDown { from { opacity: 0; transform: translateY(-8px); } to { opacity: 1; transform: translateY(0); } }
@@ -615,7 +656,7 @@ ${renderNav('dashboard')}
     <div class="value" id="v-atlas">${state.memoryatlas.total}</div>
     <div class="sub">${state.memoryatlas.hours}h recorded / ${state.memoryatlas.transcribed} transcribed</div>
   </div>
-  <div class="card" style="border-left:3px solid ${state.philological.running ? '#ffaa00' : parseInt(state.philological.polished) === parseInt(state.philological.total) ? '#00ff88' : '#555'}">
+  <div class="card" style="border-left:3px solid ${state.philological.running ? '#ffaa00' : parseInt(state.philological.polished) === parseInt(state.philological.total) ? '#22c55e' : '#555'}">
     <h3><a href="/philological" style="color:inherit;text-decoration:none">Philological</a></h3>
     <div class="value">${state.philological.polished}/${state.philological.total}</div>
     <div class="sub">${state.philological.running ? '🔄 polishing...' : 'restored + translated'} · ${state.philological.languages || 'none'}</div>
@@ -636,7 +677,7 @@ ${renderNav('dashboard')}
       <tr style="height:12px;"><td colspan="2"></td></tr>
       <tr><td><strong>Claude Code / Anthropic API</strong></td><td style="text-align:right; color:#888;">Check console ⤵</td></tr>
       <tr><td colspan="2" style="padding-top:4px; font-size:12px; color:#888;">
-        → <a href="https://console.anthropic.com/settings/billing" target="_blank" style="color:#00ff88;">console.anthropic.com/settings/billing</a><br>
+        → <a href="https://console.anthropic.com/settings/billing" target="_blank" style="color:#ffaa00;">console.anthropic.com/settings/billing</a><br>
         <span style="color:#666;">Depends on: Claude Pro subscription ($20/mo unlimited) vs API credits (pay-per-token)</span>
       </td></tr>
       <tr style="height:12px;"><td colspan="2"></td></tr>
@@ -656,14 +697,14 @@ ${renderNav('dashboard')}
     <tr><td style="padding-left:16px;">Output tokens</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.output.toFixed(2) : '0.00'}</td></tr>
     <tr><td style="padding-left:16px;">Cache create</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.cache_create.toFixed(2) : '0.00'}</td></tr>
     <tr><td style="padding-left:16px;">Cache read</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.cache_read.toFixed(2) : '0.00'}</td></tr>
-    <tr style="border-top:1px solid #333;"><td><strong style="color:#00ff88;">Cache Efficiency Gain:</strong></td><td style="text-align:right; color:#00ff88;"><strong>\$${state.wallet.saved_by_cache ? state.wallet.saved_by_cache.toFixed(2) : '0.00'}</strong></td></tr>
-    <tr><td colspan="2" style="font-size:12px; color:#666; padding-top:8px;">Without caching: \$${state.wallet.cost && state.wallet.saved_by_cache ? (state.wallet.cost.total + state.wallet.saved_by_cache).toFixed(2) : '0.00'} · <strong style="color:#00ff88;">${state.wallet.cost && state.wallet.saved_by_cache ? ((state.wallet.saved_by_cache / (state.wallet.cost.total + state.wallet.saved_by_cache)) * 100).toFixed(1) : '0'}% efficient</strong></td></tr>
+    <tr style="border-top:1px solid #333;"><td><strong style="color:#ffaa00;">Cache Efficiency Gain:</strong></td><td style="text-align:right; color:#ffaa00;"><strong>\$${state.wallet.saved_by_cache ? state.wallet.saved_by_cache.toFixed(2) : '0.00'}</strong></td></tr>
+    <tr><td colspan="2" style="font-size:12px; color:#666; padding-top:8px;">Without caching: \$${state.wallet.cost && state.wallet.saved_by_cache ? (state.wallet.cost.total + state.wallet.saved_by_cache).toFixed(2) : '0.00'} · <strong style="color:#ffaa00;">${state.wallet.cost && state.wallet.saved_by_cache ? ((state.wallet.saved_by_cache / (state.wallet.cost.total + state.wallet.saved_by_cache)) * 100).toFixed(1) : '0'}% efficient</strong></td></tr>
   </table>
   <details style="margin-top:20px;">
     <summary style="cursor:pointer; color:#00ccff; font-weight:bold;">📊 View ${state.wallet.sessions || 0} Sessions (click to expand)</summary>
     <div style="max-height:400px; overflow-y:auto; margin-top:12px; background:#0a0a0a; padding:12px; border-radius:4px; font-family:monospace; font-size:11px;">
       ${state.wallet.by_session ? state.wallet.by_session.map(s => {
-        const color = s.model.includes('opus') ? '#ffaa00' : s.model.includes('sonnet') ? '#00ccff' : '#00ff88';
+        const color = s.model.includes('opus') ? '#ffaa00' : s.model.includes('sonnet') ? '#00ccff' : '#ffaa00';
         return `<div style="margin-bottom:8px; padding:8px; background:#151515; border-left:3px solid ${color}; border-radius:3px;">
           <strong>${s.session_id}</strong> · ${s.model}<br>
           <span style="color:#888;">In: ${(s.input/1000).toFixed(0)}K | Out: ${(s.output/1000).toFixed(0)}K | Cache: ${(s.cache_read/1e6).toFixed(1)}M | Total: ${(s.total/1e6).toFixed(1)}M</span>
@@ -680,7 +721,7 @@ ${renderNav('dashboard')}
 <div class="section">
   <h2>Digital Vitals</h2>
   <div class="grid">
-    <div class="card clickable" style="border-color:#00ff8833" data-metric="tokens" data-label="Total Tokens">
+    <div class="card clickable" style="border-color:#ffaa0033" data-metric="tokens" data-label="Total Tokens">
       <h3>Total Tokens</h3>
       <div class="value" id="v-tokens">${state.wallet.total_tokens ? (state.wallet.total_tokens / 1e6).toFixed(1) + 'M' : '—'}</div>
       <div class="sub">${state.wallet.input_tokens ? (state.wallet.input_tokens / 1e3).toFixed(0) + 'K in / ' + (state.wallet.output_tokens / 1e3).toFixed(0) + 'K out' : 'across all sessions'}</div>
@@ -708,7 +749,7 @@ ${renderNav('dashboard')}
     <div class="card clickable" data-metric="prompts" data-label="Prompts">
       <h3>Prompts</h3>
       <div class="value" id="v-prompts">${state.agents.promptTotal}</div>
-      <div class="sub">${state.agents.promptSessions} sessions · <a href="https://localhost:3002" style="color:#00ff88;font-size:11px">browse →</a></div>
+      <div class="sub">${state.agents.promptSessions} sessions · <a href="https://localhost:3002" style="color:#ffaa00;font-size:11px">browse →</a></div>
     </div>
     <div class="card clickable" data-metric="sessions" data-label="Sessions">
       <h3>Sessions</h3>
@@ -728,7 +769,7 @@ ${renderNav('dashboard')}
 
 <div class="section">
   <h2>📅 Ground Truth Calendar <span style="color:#555;font-size:11px;font-weight:normal;margin-left:8px">Google Calendar · next 7 days · ${state.calendar.events.length} events</span></h2>
-  ${state.calendar.events.length === 0 ? '<div style="color:#555;font-size:13px">No events found — calendar binary may need permissions. Run: <code style="color:#00ff88">~/life-dashboard/cal-events 7</code></div>' : ''}
+  ${state.calendar.events.length === 0 ? '<div style="color:#555;font-size:13px">No events found — calendar binary may need permissions. Run: <code style="color:#ffaa00">~/life-dashboard/cal-events 7</code></div>' : ''}
   <table>
     <tr><th>When</th><th>Event</th><th>Calendar</th><th>Location</th></tr>
     ${state.calendar.events.map(e => {
@@ -738,9 +779,9 @@ ${renderNav('dashboard')}
       const isTomorrow = d.toDateString() === new Date(now.getTime() + 86400000).toDateString();
       const dayStr = isToday ? 'Today' : isTomorrow ? 'Tomorrow' : d.toLocaleDateString('en-US', { weekday: 'short', month: 'short', day: 'numeric' });
       const timeStr = e.allDay ? 'All day' : d.toLocaleTimeString('en-US', { hour: 'numeric', minute: '2-digit' });
-      const rowStyle = isToday ? 'background:#0a1a0a;' : '';
+      const rowStyle = isToday ? 'background:#1a150a;' : '';
       return `<tr style="${rowStyle}">
-        <td style="white-space:nowrap;color:${isToday ? '#00ff88' : '#888'}">${dayStr}<br><span style="color:#555;font-size:11px">${timeStr}</span></td>
+        <td style="white-space:nowrap;color:${isToday ? '#ffaa00' : '#888'}">${dayStr}<br><span style="color:#555;font-size:11px">${timeStr}</span></td>
         <td style="color:${isToday ? '#e0e0e0' : '#aaa'};font-weight:${isToday ? 'bold' : 'normal'}">${e.title}</td>
         <td style="color:#555;font-size:12px">${e.calendar}</td>
         <td style="color:#555;font-size:12px">${e.location || ''}</td>
@@ -830,7 +871,7 @@ ${renderNav('dashboard')}
         : '';
       return '<tr class="' + (isLatest ? 'running' : 'done') + '">' +
         '<td>' + statusDot + '</td>' +
-        '<td><span style="color:' + (isLatest ? '#00ff88' : '#aaa') + ';font-size:12px">' + inst.name + '</span></td>' +
+        '<td><span style="color:' + (isLatest ? '#ffaa00' : '#aaa') + ';font-size:12px">' + inst.name + '</span></td>' +
         '<td style="font-size:11px;color:#666">' + (inst.model || '—').replace('Claude Code CLI', 'CC').replace('Claude Opus 4.6 (', '').replace(')', '') + '</td>' +
         '<td style="font-size:11px;color:#555">' + inst.date + '</td>' +
         '<td><div style="font-size:11px;color:#999">' + (inst.focus || '—').slice(0, 60) + '</div>' + pendingStr + '</td>' +
@@ -1029,8 +1070,8 @@ ${renderNav('dashboard')}
       <svg viewBox="0 0 \${W} \${H}" preserveAspectRatio="none">
         <defs>
           <linearGradient id="sparkGrad" x1="0" y1="0" x2="0" y2="1">
-            <stop offset="0%" stop-color="#00ff88" stop-opacity="0.3"/>
-            <stop offset="100%" stop-color="#00ff88" stop-opacity="0"/>
+            <stop offset="0%" stop-color="#ffaa00" stop-opacity="0.3"/>
+            <stop offset="100%" stop-color="#ffaa00" stop-opacity="0"/>
           </linearGradient>
         </defs>
         \${gridLines}
@@ -1075,7 +1116,7 @@ ${renderNav('dashboard')}
 })();
 </script>
 
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Philological Pipeline Page ──────────────────────────────────────
@@ -1123,7 +1164,7 @@ function renderPhilologicalHTML() {
   const data = getPhilologicalData();
   const LANG_NAMES = { ru: 'Russian', ja: 'Japanese', ko: 'Korean', tr: 'Turkish', pt: 'Portuguese', is: 'Icelandic', zh: 'Chinese', de: 'German', fr: 'French' };
   const pct = data.pct;
-  const barColor = data.running ? '#ffaa00' : pct === 100 ? '#00ff88' : '#4488ff';
+  const barColor = data.running ? '#ffaa00' : pct === 100 ? '#22c55e' : '#4488ff';
 
   const langCards = data.langBreakdown.map(l => {
     const name = LANG_NAMES[l.lang] || l.lang;
@@ -1132,10 +1173,10 @@ function renderPhilologicalHTML() {
     return `<div style="background:#111;border:1px solid #222;border-radius:8px;padding:16px;min-width:140px">
       <div style="font-size:24px;margin-bottom:4px">${flag}</div>
       <div style="font-size:18px;font-weight:bold;color:#eee">${name}</div>
-      <div style="font-size:28px;font-weight:bold;color:${lPct===100?'#00ff88':'#4488ff'}">${l.polished}/${l.total}</div>
+      <div style="font-size:28px;font-weight:bold;color:${lPct===100?'#22c55e':'#4488ff'}">${l.polished}/${l.total}</div>
       <div style="font-size:12px;color:#888">${l.minutes} min · ${lPct}%</div>
       <div style="background:#222;border-radius:4px;height:4px;margin-top:8px">
-        <div style="background:${lPct===100?'#00ff88':'#4488ff'};height:4px;border-radius:4px;width:${lPct}%"></div>
+        <div style="background:${lPct===100?'#22c55e':'#4488ff'};height:4px;border-radius:4px;width:${lPct}%"></div>
       </div>
     </div>`;
   }).join('\n');
@@ -1163,10 +1204,11 @@ function renderPhilologicalHTML() {
     `<tr><td style="color:#eee">${(r.title || '').replace(/</g, '&lt;')}</td><td style="color:#888">${r.transcript_lang}</td><td style="text-align:right;color:#666">${r.minutes}min</td></tr>`
   ).join('\n');
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Philological Pipeline</title>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>PL.OS - Philological</title>
 <style>
   body { font-family: 'SF Mono', 'Menlo', monospace; background: #0a0a0a; color: #ccc; margin: 0; padding: 20px; }
-  a { color: #00ff88; }
+  a { color: #ffaa00; }
 </style></head><body>
 ${renderNav('philological')}
 <h1 style="color:#eee;margin-bottom:4px">\u{1F4DC} Philological Pipeline</h1>
@@ -1220,7 +1262,7 @@ ${data.remaining.length > 0 ? `
   Auto-refresh 30s \u00B7 <a href="/api/philological" style="color:#333">JSON</a> \u00B7 Model: qwen2.5:32b (local) \u00B7 Pipeline: <code>atlas polish</code>
 </div>
 <script>setInterval(async()=>{try{const r=await fetch('/philological');const h=await r.text();document.open();document.write(h);document.close()}catch{}},30000);</script>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Daily Briefing / Eisenhower Matrix ──────────────────────────────
@@ -1360,7 +1402,8 @@ function renderBriefingHTML() {
     </div>
   `).join('');
 
-  return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Daily Briefing</title>
+  return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>PL.OS - Briefing</title>
 <meta http-equiv="refresh" content="300">
 <style>
   body { background:#0a0a1a; color:#e6e6e6; font-family:-apple-system,BlinkMacSystemFont,'SF Pro Text',system-ui,sans-serif; margin:0; padding:20px; }
@@ -1393,7 +1436,7 @@ ${renderNav('briefing')}
     Generated ${data.generated} — Source: ~/.claude/TASKS.md — Auto-refresh 5min
   </div>
 </div>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Plan Execution Tracker ───────────────────────────────────────────
@@ -1424,10 +1467,10 @@ function renderPlanHTML() {
   const tasksPct = Math.round((tasksDone / TASKS.length) * 100);
 
   const waveRows = waves.map(w => {
-    const statusIcon = w.status === 'done' ? '<span style="color:#00ff88">DONE</span>'
+    const statusIcon = w.status === 'done' ? '<span style="color:#22c55e">DONE</span>'
       : w.status === 'running' ? '<span style="color:#00aaff;animation:pulse 2s infinite">RUNNING</span>'
       : '<span style="color:#555">PENDING</span>';
-    const workerBadge = w.worker ? `<span style="background:#1a2a1a;color:#00ff88;padding:2px 6px;border-radius:3px;font-size:10px">${w.worker}</span>` : '';
+    const workerBadge = w.worker ? `<span style="background:#1a1a0a;color:#ffaa00;padding:2px 6px;border-radius:3px;font-size:10px">${w.worker}</span>` : '';
     const duration = w.startedAt && w.completedAt
       ? `${Math.round((new Date(w.completedAt) - new Date(w.startedAt)) / 60000)}m`
       : w.startedAt ? `${Math.round((Date.now() - new Date(w.startedAt)) / 60000)}m...` : '';
@@ -1466,30 +1509,28 @@ function renderPlanHTML() {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<title>Plan Tracker | PracticeLife</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Plan</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #0a0a0a; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; padding: 20px; }
-  h1 { color: #00ff88; font-size: 24px; margin-bottom: 4px; }
+  h1 { color: #ffaa00; font-size: 24px; margin-bottom: 4px; }
   .subtitle { color: #666; margin-bottom: 20px; font-size: 13px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 16px; margin-bottom: 24px; }
   .card { background: #151515; border: 1px solid #222; border-radius: 8px; padding: 16px; }
   .card h3 { color: #888; font-size: 11px; text-transform: uppercase; letter-spacing: 1px; margin-bottom: 8px; }
-  .card .value { font-size: 32px; font-weight: bold; color: #00ff88; }
+  .card .value { font-size: 32px; font-weight: bold; color: #ffaa00; }
   .card .sub { color: #555; font-size: 12px; margin-top: 4px; }
   .progress-bar { width: 100%; height: 32px; background: #1a1a1a; border-radius: 16px; overflow: hidden; margin: 16px 0; border: 1px solid #333; position: relative; }
   .progress-fill { height: 100%; transition: width 0.8s ease; display: flex; align-items: center; justify-content: center; font-size: 13px; font-weight: bold; color: #000; }
   .progress-target { position: absolute; top: 0; height: 100%; border-left: 2px dashed #ffaa00; }
   .section { margin-top: 24px; }
-  .section h2 { color: #00ff88; font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #222; padding-bottom: 8px; }
+  .section h2 { color: #ffaa00; font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #222; padding-bottom: 8px; }
   table { width: 100%; border-collapse: collapse; }
   .two-col { display: grid; grid-template-columns: 2fr 1fr; gap: 24px; }
   @media (max-width: 900px) { .two-col { grid-template-columns: 1fr; } }
-  a { color: #00ff88; text-decoration: none; }
+  a { color: #ffaa00; text-decoration: none; }
   a:hover { text-decoration: underline; }
-  .nav { display: flex; gap: 16px; margin-bottom: 20px; }
-  .nav a { color: #555; font-size: 13px; padding: 4px 12px; border: 1px solid #222; border-radius: 6px; }
-  .nav a:hover, .nav a.active { color: #00ff88; border-color: #00ff88; }
   @keyframes pulse { 0%, 100% { opacity: 1; } 50% { opacity: 0.5; } }
 </style>
 </head><body>
@@ -1523,7 +1564,7 @@ ${renderNav('plan')}
 </div>
 
 <div class="progress-bar">
-  <div class="progress-fill" style="width:${tasksPct}%;background:linear-gradient(90deg, #00ff88, #00cc66)">${tasksPct}%</div>
+  <div class="progress-fill" style="width:${tasksPct}%;background:linear-gradient(90deg, #ffaa00, #cc8800)">${tasksPct}%</div>
   <div class="progress-target" style="left:${plan.targetPct || 0}%"><span style="position:absolute;top:-18px;left:-10px;color:#ffaa00;font-size:10px">${plan.targetPct}%</span></div>
 </div>
 
@@ -1559,18 +1600,19 @@ setInterval(async () => {
 }, 10000);
 </script>
 
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 function renderNoPlanHTML() {
   return `<!DOCTYPE html>
-<html><head><meta charset="utf-8"><title>Plan Tracker</title>
+<html><head><meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>PL.OS - Plan</title>
 <style>body{background:#0a0a0a;color:#e0e0e0;font-family:'SF Mono',monospace;display:flex;align-items:center;justify-content:center;height:100vh;flex-direction:column}
-a{color:#00ff88}</style>
+a{color:#ffaa00}</style>
 </head><body>
 <h1 style="color:#555;font-size:48px">No Active Plan</h1>
 <p style="color:#444;margin-top:12px">No plan-state.json found. <a href="/">Back to Dashboard</a></p>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Life Stream: Self-Assembling Personal Dashboard ──────────────────
@@ -2011,14 +2053,14 @@ function renderStreamHTML() {
 
   // Domain definitions
   const domainDefs = {
-    memory: { label: 'Memory', sub: 'Your accumulated life record', color: '#00ff88', icon: '\u{1F9EC}' },
+    memory: { label: 'Memory', sub: 'Your accumulated life record', color: '#ffaa00', icon: '\u{1F9EC}' },
     mind:   { label: 'Mind', sub: 'Knowledge and creative output', color: '#00aaff', icon: '\u{1F52E}' },
     network:{ label: 'Network', sub: 'People and communication', color: '#aa88ff', icon: '\u{1F30A}' },
     body:   { label: 'Body', sub: 'Health and biometrics', color: '#ff6688', icon: '\u2764\uFE0F' },
     orbit:  { label: 'Orbit', sub: 'Digital presence and tools', color: '#ffaa00', icon: '\u{1F6F8}' },
   };
 
-  const valenceColors = { growth: '#00ff88', pulse: '#00aaff', decay: '#ffaa00', care: '#ff6688' };
+  const valenceColors = { growth: '#22c55e', pulse: '#00aaff', decay: '#ffaa00', care: '#ff6688' };
 
   const grouped = {};
   for (const s of streams) {
@@ -2087,7 +2129,7 @@ function renderStreamHTML() {
   // Evolution
   const evoHTML = (manifest?.evolution || []).slice(-10).reverse().map(e => {
     const dt = new Date(e.t).toLocaleDateString();
-    const badge = e.event === 'genesis' ? 'background:#1a1a2a;color:#aa88ff' : 'background:#1a2a1a;color:#00ff88';
+    const badge = e.event === 'genesis' ? 'background:#1a1a2a;color:#aa88ff' : 'background:#1a1a0a;color:#ffaa00';
     return `<div class="ee"><span style="${badge};padding:1px 6px;border-radius:3px;font-size:10px;text-transform:uppercase">${e.event}</span> <span style="color:#444">${dt}</span> ${e.note}</div>`;
   }).join('');
 
@@ -2104,19 +2146,17 @@ function renderStreamHTML() {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<title>Life Stream | \u03A9\u2080</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Stream</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#080808;color:#ddd;font-family:'SF Mono','Fira Code',monospace;padding:24px 32px;max-width:1200px;margin:0 auto}
-.nav{display:flex;gap:16px;margin-bottom:24px}
-.nav a{color:#555;font-size:13px;padding:4px 12px;border:1px solid #222;border-radius:6px;text-decoration:none}
-.nav a:hover,.nav a.active{color:#00ff88;border-color:#00ff88}
-h1{color:#00ff88;font-size:28px;margin-bottom:4px}
+h1{color:#ffaa00;font-size:28px;margin-bottom:4px}
 .sub{color:#555;font-size:13px;margin-bottom:8px}
-.narrative{color:#999;font-size:14px;line-height:1.6;margin-bottom:24px;padding:16px 20px;background:#0c0c0c;border-left:3px solid #00ff8844;border-radius:0 8px 8px 0}
+.narrative{color:#999;font-size:14px;line-height:1.6;margin-bottom:24px;padding:16px 20px;background:#0c0c0c;border-left:3px solid #ffaa0044;border-radius:0 8px 8px 0}
 .signal{display:flex;align-items:center;gap:16px;margin-bottom:32px;padding:16px;background:#0d0d0d;border:1px solid #1a1a1a;border-radius:8px}
-.signal .blocks{color:#00ff88;font-size:18px;letter-spacing:2px}
-.signal .pct{color:#00ff88;font-size:28px;font-weight:bold}
+.signal .blocks{color:#ffaa00;font-size:18px;letter-spacing:2px}
+.signal .pct{color:#ffaa00;font-size:28px;font-weight:bold}
 .signal .detail{color:#444;font-size:11px;flex:1}
 .ds{margin-bottom:36px}
 .ds-header{display:flex;align-items:center;gap:12px;padding-bottom:10px;margin-bottom:16px;border-bottom:1px solid}
@@ -2193,7 +2233,7 @@ Probed ${data.probedAt} \u00B7 Manifest: ~/.claude/stream-manifest.json \u00B7 A
 setInterval(async()=>{try{const r=await fetch('/stream');const h=await r.text();document.open();document.write(h);document.close()}catch{}},60000);
 </script>
 
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Threads page ────────────────────────────────────────────────────
@@ -2204,7 +2244,7 @@ function renderThreadsHTML() {
   const sorted = [...threads].sort((a, b) => (statusOrder[a.status] ?? 5) - (statusOrder[b.status] ?? 5));
 
   const chip = {
-    done:     { label: 'DONE',        color: '#00ff88', bg: '#00ff8811', border: '#00ff8833' },
+    done:     { label: 'DONE',        color: '#22c55e', bg: '#22c55e11', border: '#22c55e33' },
     running:  { label: 'IN PROGRESS', color: '#00aaff', bg: '#00aaff11', border: '#00aaff33' },
     blocked:  { label: 'BLOCKED',     color: '#ffaa00', bg: '#ffaa0011', border: '#ffaa0033' },
     critical: { label: 'CRITICAL',    color: '#ff4444', bg: '#ff444411', border: '#ff444433' },
@@ -2229,15 +2269,13 @@ function renderThreadsHTML() {
 
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
-<title>Ω₀ Threads</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Threads</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
-h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
+h1 { color:#ffaa00; font-size:28px; margin-bottom:4px; }
 .subtitle { color:#666; margin-bottom:20px; font-size:13px; }
-.nav { display:flex; gap:16px; margin-bottom:20px; }
-.nav a { color:#555; font-size:13px; padding:4px 12px; border:1px solid #222; border-radius:6px; text-decoration:none; }
-.nav a:hover, .nav a.active { color:#00ff88; border-color:#00ff88; }
 .summary { display:flex; gap:16px; flex-wrap:wrap; margin-bottom:24px; }
 .sstat { background:#151515; border:1px solid #222; border-radius:8px; padding:12px 20px; text-align:center; }
 .sstat .sv { font-size:28px; font-weight:bold; }
@@ -2246,7 +2284,7 @@ h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
 .sv.running  { color:#00aaff; }
 .sv.blocked  { color:#ffaa00; }
 .sv.pending  { color:#555; }
-.sv.done     { color:#00ff88; }
+.sv.done     { color:#22c55e; }
 .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(340px,1fr)); gap:14px; }
 .tcard { background:#111; border:1px solid #222; border-radius:8px; padding:16px; }
 .tname { font-size:14px; font-weight:bold; color:#e0e0e0; }
@@ -2271,7 +2309,7 @@ ${renderNav('threads')}
 <div class="grid">${cards}</div>
 <div class="timestamp">Parsed ${new Date().toLocaleString()} · MEMORY.md</div>
 <script>setInterval(async()=>{try{const r=await fetch('/threads');const h=await r.text();document.open();document.write(h);document.close()}catch{}},60000);</script>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Blockers (Peretz-only) ──────────────────────────────────────────
@@ -2359,7 +2397,7 @@ function renderBlockersHTML() {
     const pc = priorityColor(t.priority || 'P2');
     const detailsHTML = (t.details || []).map(d => `<li>${d}</li>`).join('');
     const ownerTag = t.owner ? `<span style="color:#888;font-size:11px;margin-left:8px">${t.owner}</span>` : '';
-    const timeTag = t.time ? `<span style="color:#00ff88;font-size:11px;margin-left:8px">${t.time}</span>` : '';
+    const timeTag = t.time ? `<span style="color:#ffaa00;font-size:11px;margin-left:8px">${t.time}</span>` : '';
     return `<details class="task-card" style="border-left:4px solid ${pc}">
   <summary class="task-summary">
     <div class="task-header">
@@ -2379,12 +2417,13 @@ function renderBlockersHTML() {
 
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
-<title>Convergence | PracticeLife</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Convergence</title>
 <meta http-equiv="refresh" content="60">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
-h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
+h1 { color:#ffaa00; font-size:28px; margin-bottom:4px; }
 h2 { font-size:18px; margin:24px 0 12px 0; padding-bottom:8px; border-bottom:1px solid #222; }
 .subtitle { color:#666; margin-bottom:20px; font-size:13px; }
 
@@ -2410,7 +2449,7 @@ h2 { font-size:18px; margin:24px 0 12px 0; padding-bottom:8px; border-bottom:1px
 .section-agent h2 { color:#00aaff; }
 .section-peretz h2 { color:#ff4444; }
 .section-simmering h2 { color:#555; }
-.section-completed h2 { color:#00ff88; }
+.section-completed h2 { color:#22c55e; }
 
 .simmering-list, .completed-list { margin-left:20px; font-size:12px; line-height:2; color:#888; }
 .completed-list { color:#555; }
@@ -2426,7 +2465,7 @@ ${renderNav('blockers')}
 <div class="convergence-bar">
   <div class="label">Convergence: ${completedCount} done / ${completedCount + total} total threads</div>
   <div class="bar-bg">
-    <div class="bar-fill" style="width:${convergence}%;background:${convergence > 70 ? '#00ff88' : convergence > 40 ? '#ffaa00' : '#ff4444'}">
+    <div class="bar-fill" style="width:${convergence}%;background:${convergence > 70 ? '#22c55e' : convergence > 40 ? '#ffaa00' : '#ff4444'}">
       ${convergence}%
     </div>
   </div>
@@ -2442,7 +2481,7 @@ ${renderNav('blockers')}
     <div class="label">Agent Can Execute</div>
   </div>
   <div class="scard">
-    <div class="num" style="color:#00ff88">${completedCount}</div>
+    <div class="num" style="color:#22c55e">${completedCount}</div>
     <div class="label">Completed</div>
   </div>
   <div class="scard">
@@ -2473,7 +2512,7 @@ ${renderNav('blockers')}
 
 <div class="source">Source: ~/.claude/TASKS.md · Updated by agents continuously</div>
 <div class="timestamp">Last refresh: ${new Date().toLocaleString()}</div>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Server ──────────────────────────────────────────────────────────
@@ -2486,6 +2525,12 @@ const sslOptions = {
 };
 
 const server = https.createServer(sslOptions, (req, res) => {
+  if (req.url === '/favicon.svg' || req.url === '/favicon.ico') {
+    const fp = path.join(__dirname, 'public', 'favicon.svg');
+    if (fs.existsSync(fp)) { const d = fs.readFileSync(fp); res.writeHead(200, { 'Content-Type': 'image/svg+xml', 'Cache-Control': 'public, max-age=86400' }); res.end(d); }
+    else { res.writeHead(404); res.end(); }
+    return;
+  }
   if (req.url === '/api/state') {
     const state = getState();
     recordHistory(state);
@@ -2967,15 +3012,16 @@ function renderFleetHTML() {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<title>Fleet — PracticeLife OS</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Fleet</title>
 <style>
   * { margin: 0; padding: 0; box-sizing: border-box; }
   body { background: #0a0a0a; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; padding: 20px; }
-  h1 { color: #00ff88; font-size: 24px; margin-bottom: 4px; }
+  h1 { color: #ffaa00; font-size: 24px; margin-bottom: 4px; }
   .subtitle { color: #666; font-size: 12px; margin-bottom: 20px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(380px, 1fr)); gap: 16px; margin-bottom: 24px; }
   .machine { background: #151515; border: 1px solid #222; border-radius: 12px; padding: 20px; position: relative; }
-  .machine.primary { border-color: #00ff8855; }
+  .machine.primary { border-color: #ffaa0055; }
   .machine.inference { border-color: #00aaff55; }
   .machine.storage { border-color: #ffaa0055; }
   .machine.mobile { border-color: #aa55ff55; }
@@ -2983,41 +3029,38 @@ function renderFleetHTML() {
   .machine .role { color: #888; font-size: 11px; margin-bottom: 12px; }
   .machine .specs { color: #555; font-size: 11px; margin-bottom: 8px; }
   .dot { width: 10px; height: 10px; border-radius: 50%; display: inline-block; }
-  .dot.up { background: #00ff88; box-shadow: 0 0 8px #00ff88; }
+  .dot.up { background: #22c55e; box-shadow: 0 0 8px #22c55e; }
   .dot.down { background: #ff4444; box-shadow: 0 0 8px #ff4444; }
   .dot.offline { background: #555; }
   .services { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
   .svc { font-size: 11px; padding: 3px 8px; border-radius: 4px; border: 1px solid #333; }
-  .svc.up { background: #0a1a0a; color: #00ff88; border-color: #00ff8833; }
+  .svc.up { background: #0a1a0f; color: #22c55e; border-color: #22c55e33; }
   .svc.down { background: #1a0a0a; color: #ff4444; border-color: #ff444433; }
   .models { margin: 8px 0; }
   .model { font-size: 12px; padding: 4px 0; color: #ccc; display: flex; justify-content: space-between; }
   .model .size { color: #555; }
   .section { margin-top: 24px; }
-  .section h2 { color: #00ff88; font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #222; padding-bottom: 8px; }
+  .section h2 { color: #ffaa00; font-size: 16px; margin-bottom: 12px; border-bottom: 1px solid #222; padding-bottom: 8px; }
   .routes { margin: 12px 0; }
   .route { font-size: 12px; padding: 4px 10px; display: flex; justify-content: space-between; border-bottom: 1px solid #111; }
   .route .name { color: #00aaff; }
   .route .target { color: #555; }
   .flow { background: #111; border-radius: 8px; padding: 12px; margin: 12px 0; font-size: 12px; line-height: 1.8; }
-  .flow .arrow { color: #00ff88; }
+  .flow .arrow { color: #ffaa00; }
   .mesh { display: flex; flex-wrap: wrap; gap: 8px; margin: 12px 0; }
   .device { font-size: 11px; padding: 4px 10px; border-radius: 4px; border: 1px solid #333; display: flex; align-items: center; gap: 6px; }
-  .device.online { border-color: #00ff8833; }
+  .device.online { border-color: #ffaa0033; }
   .device.offline { border-color: #55555533; opacity: 0.5; }
-  .latency { color: #00ff88; font-size: 11px; }
+  .latency { color: #ffaa00; font-size: 11px; }
   .loading { color: #555; font-style: italic; }
   .error { color: #ff4444; }
   .capabilities { font-size: 11px; color: #888; line-height: 1.6; padding-left: 12px; }
   .capabilities li { margin: 2px 0; }
-  .refresh { position: fixed; bottom: 20px; right: 20px; background: #151515; border: 1px solid #333; color: #00ff88; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 12px; }
-  .refresh:hover { border-color: #00ff88; }
+  .refresh { position: fixed; bottom: 20px; right: 20px; background: #151515; border: 1px solid #333; color: #ffaa00; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 12px; }
+  .refresh:hover { border-color: #ffaa00; }
   .stat { display: flex; justify-content: space-between; font-size: 12px; padding: 2px 0; }
   .stat .label { color: #888; }
-  .stat .val { color: #00ff88; }
-  .nav { display: flex; gap: 16px; margin-bottom: 12px; }
-  .nav a { color: #555; font-size: 13px; padding: 4px 12px; border: 1px solid #222; border-radius: 6px; text-decoration: none; }
-  .nav a.active { color: #00ff88; border-color: #00ff88; }
+  .stat .val { color: #ffaa00; }
 </style>
 </head><body>
 ${renderNav('fleet')}
@@ -3142,7 +3185,7 @@ function renderFleet(d) {
 loadFleet();
 setInterval(loadFleet, 30000);
 </script>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Cheat Sheet Page ─────────────────────────────────────────────────
@@ -3192,9 +3235,10 @@ function renderUsageHTML() {
 <html>
 <head>
   <meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <meta http-equiv="refresh" content="60">
-  <title>Usage Tracker — ${stats.date}</title>
+  <title>PL.OS - Usage</title>
   <style>
     * { margin: 0; padding: 0; box-sizing: border-box; }
     body {
@@ -3209,7 +3253,7 @@ function renderUsageHTML() {
     h1 {
       font-size: 24px;
       margin-bottom: 20px;
-      color: #00ff88;
+      color: #ffaa00;
       font-weight: 600;
     }
     .summary {
@@ -3227,7 +3271,7 @@ function renderUsageHTML() {
     }
     .metric:last-child { border-bottom: none; }
     .metric-label { color: #888; }
-    .metric-value { color: #00ff88; font-weight: 600; }
+    .metric-value { color: #ffaa00; font-weight: 600; }
     .status {
       font-size: 18px;
       padding: 12px;
@@ -3237,7 +3281,7 @@ function renderUsageHTML() {
       text-align: center;
       margin-bottom: 20px;
     }
-    .status.excellent { border-color: #00ff88; color: #00ff88; }
+    .status.excellent { border-color: #22c55e; color: #22c55e; }
     .status.good { border-color: #ffaa00; color: #ffaa00; }
     .status.underutilized { border-color: #ff3366; color: #ff3366; }
     .progress-bar {
@@ -3251,7 +3295,7 @@ function renderUsageHTML() {
     }
     .progress-fill {
       height: 100%;
-      background: linear-gradient(90deg, #00ff88, #00cc66);
+      background: linear-gradient(90deg, #ffaa00, #cc8800);
       transition: width 0.5s ease;
       display: flex;
       align-items: center;
@@ -3270,7 +3314,7 @@ function renderUsageHTML() {
     }
     th {
       background: #222;
-      color: #00ff88;
+      color: #ffaa00;
       padding: 12px;
       text-align: left;
       font-weight: 600;
@@ -3282,10 +3326,10 @@ function renderUsageHTML() {
     tr:hover { background: #1f1f1f; }
     .section-title {
       font-size: 18px;
-      color: #00ff88;
+      color: #ffaa00;
       margin: 30px 0 15px;
     }
-    a { color: #00ff88; text-decoration: none; }
+    a { color: #ffaa00; text-decoration: none; }
     a:hover { text-decoration: underline; }
     .footer {
       text-align: center;
@@ -3367,7 +3411,7 @@ function renderUsageHTML() {
 </body>
 </html>`;
   } catch (e) {
-    return `<html><body><h1>Error</h1><pre>${e.message}\n${e.stack}</pre></body></html>`;
+    return `<html><body><h1>Error</h1><pre>${e.message}\n${e.stack}</pre>${PLOS_FOOTER_HTML}</body></html>`;
   }
 }
 
@@ -3393,33 +3437,31 @@ function renderCheatsheetHTML() {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<title>Claude Code Cheat Sheet | Ω₀</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Docs</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; max-width:1200px; margin:0 auto; line-height:1.6; }
-h1 { color:#00ff88; font-size:32px; margin:20px 0 10px 0; }
+h1 { color:#ffaa00; font-size:32px; margin:20px 0 10px 0; }
 h2 { color:#00aaff; font-size:20px; margin:30px 0 10px 0; padding-bottom:6px; border-bottom:1px solid #222; }
 h3 { color:#ffaa00; font-size:16px; margin:20px 0 8px 0; }
 p { margin:10px 0; color:#ccc; }
-code { background:#151515; padding:2px 6px; border-radius:3px; color:#00ff88; font-size:13px; }
-pre.code-block { background:#0d0d0d; border:1px solid #222; border-left:3px solid #00ff88; padding:16px; border-radius:6px; overflow-x:auto; margin:16px 0; color:#e0e0e0; font-size:13px; line-height:1.4; }
+code { background:#151515; padding:2px 6px; border-radius:3px; color:#ffaa00; font-size:13px; }
+pre.code-block { background:#0d0d0d; border:1px solid #222; border-left:3px solid #ffaa00; padding:16px; border-radius:6px; overflow-x:auto; margin:16px 0; color:#e0e0e0; font-size:13px; line-height:1.4; }
 ul { margin-left:20px; margin-top:8px; }
 li { margin:4px 0; color:#aaa; }
 table { width:100%; border-collapse:collapse; margin:16px 0; background:#0d0d0d; border-radius:6px; overflow:hidden; }
 tr { border-bottom:1px solid #1a1a1a; }
 td { padding:12px; font-size:13px; }
-td:first-child { color:#00ff88; font-weight:600; }
+td:first-child { color:#ffaa00; font-weight:600; }
 strong { color:#fff; }
-.nav { display:flex; gap:16px; margin-bottom:24px; padding-bottom:16px; border-bottom:1px solid #222; }
-.nav a { color:#555; font-size:13px; padding:4px 12px; border:1px solid #222; border-radius:6px; text-decoration:none; }
-.nav a:hover, .nav a.active { color:#00ff88; border-color:#00ff88; }
 .updated { color:#444; font-size:11px; text-align:right; margin-top:32px; }
 </style>
 </head><body>
 ${renderNav('cheatsheet')}
 ${html}
 <div class="updated">Last updated: 2026-02-21 | Location: ~/.claude/CHEAT-SHEET.md</div>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Suggested Prompts Page ───────────────────────────────────────────
@@ -3432,7 +3474,7 @@ function renderPromptsHTML() {
     return `<!DOCTYPE html><html><body style="background:#0a0a0a;color:#e0e0e0;font-family:monospace;padding:40px;text-align:center">
       <h1 style="color:#ff4444">Error Loading Prompts</h1>
       <p style="color:#666;margin-top:12px">${e.message}</p>
-    </body></html>`;
+    ${PLOS_FOOTER_HTML}</body></html>`;
   }
 
   const categories = {};
@@ -3484,23 +3526,24 @@ function renderPromptsHTML() {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<title>Suggested Prompts | Ω₀</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Prompts</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
 .container { max-width:1400px; margin:0 auto; }
-h1 { color:#00ff88; font-size:28px; margin-bottom:8px; }
+h1 { color:#ffaa00; font-size:28px; margin-bottom:8px; }
 .subtitle { color:#666; font-size:13px; margin-bottom:24px; }
 .category-section { margin-bottom:40px; }
 .category-title { color:#00aaff; font-size:18px; margin-bottom:16px; padding-bottom:8px; border-bottom:1px solid #222; }
 .prompt-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(400px,1fr)); gap:16px; }
-.prompt-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #00ff88; border-radius:8px; padding:16px; transition:border-color .2s,box-shadow .2s; }
+.prompt-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #ffaa00; border-radius:8px; padding:16px; transition:border-color .2s,box-shadow .2s; }
 .prompt-card:hover { border-left-color:#00aaff; box-shadow:0 0 20px rgba(0,255,136,.08); }
-.prompt-card.complete { border-left-color:#00ff88; opacity:0.7; }
+.prompt-card.complete { border-left-color:#22c55e; opacity:0.7; }
 .prompt-card.in_progress { border-left-color:#00aaff; }
 .prompt-card.partial { border-left-color:#ffaa00; }
 .status-badge { font-size:11px; font-weight:600; padding:4px 10px; border-radius:4px; margin-bottom:10px; display:inline-block; }
-.status-badge.complete { background:#00ff8822; color:#00ff88; border:1px solid #00ff8844; }
+.status-badge.complete { background:#22c55e22; color:#22c55e; border:1px solid #22c55e44; }
 .status-badge.progress { background:#00aaff22; color:#00aaff; border:1px solid #00aaff44; }
 .status-badge.partial { background:#ffaa0022; color:#ffaa00; border:1px solid #ffaa0044; }
 .status-badge.ready { background:#55555522; color:#888; border:1px solid #55555544; }
@@ -3512,17 +3555,17 @@ h1 { color:#00ff88; font-size:28px; margin-bottom:8px; }
 .var { color:#ffaa00; font-weight:600; }
 .prompt-meta { display:flex; gap:16px; margin-bottom:8px; }
 .meta-item { color:#666; font-size:11px; }
-.prompt-outcome { color:#00ff88; font-size:12px; margin-bottom:12px; font-style:italic; }
+.prompt-outcome { color:#ffaa00; font-size:12px; margin-bottom:12px; font-style:italic; }
 .prompt-tags { display:flex; gap:6px; flex-wrap:wrap; margin-bottom:12px; }
 .tag { background:#1a1a1a; color:#777; font-size:10px; padding:3px 8px; border-radius:4px; }
-.copy-btn { background:#00ff8822; color:#00ff88; border:1px solid #00ff8844; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:12px; font-family:inherit; width:100%; transition:all .2s; }
-.copy-btn:hover { background:#00ff8833; border-color:#00ff88; }
+.copy-btn { background:#ffaa0022; color:#ffaa00; border:1px solid #ffaa0044; padding:8px 16px; border-radius:6px; cursor:pointer; font-size:12px; font-family:inherit; width:100%; transition:all .2s; }
+.copy-btn:hover { background:#ffaa0033; border-color:#ffaa00; }
 .copy-btn:active { transform:scale(0.98); }
 .stats { display:flex; gap:20px; margin-bottom:24px; }
 .stat { background:#0d0d0d; border:1px solid #1a1a1a; border-radius:8px; padding:16px 24px; text-align:center; }
-.stat-value { color:#00ff88; font-size:32px; font-weight:600; }
+.stat-value { color:#ffaa00; font-size:32px; font-weight:600; }
 .stat-label { color:#666; font-size:11px; margin-top:4px; text-transform:uppercase; letter-spacing:1px; }
-.toast { position:fixed; top:20px; right:20px; background:#00ff88; color:#0a0a0a; padding:12px 20px; border-radius:8px; font-weight:600; display:none; animation:slideIn .3s; }
+.toast { position:fixed; top:20px; right:20px; background:#ffaa00; color:#0a0a0a; padding:12px 20px; border-radius:8px; font-weight:600; display:none; animation:slideIn .3s; }
 .toast.show { display:block; }
 @keyframes slideIn { from { transform:translateX(100%); opacity:0; } to { transform:translateX(0); opacity:1; } }
 </style>
@@ -3563,7 +3606,7 @@ function copyPrompt(id) {
 </script>
 
 </div>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── MemoryAtlas Search Page ──────────────────────────────────────────
@@ -3603,20 +3646,21 @@ function renderSearchHTML(query) {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="utf-8">
-<title>MemoryAtlas Search | Ω₀</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Search</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
 .container { max-width:1200px; margin:0 auto; }
-h1 { color:#00ff88; font-size:28px; margin-bottom:24px; }
+h1 { color:#ffaa00; font-size:28px; margin-bottom:24px; }
 .search-box { margin-bottom:32px; }
 .search-box input { width:100%; padding:16px; background:#0d0d0d; border:1px solid #222; border-radius:8px; color:#e0e0e0; font-family:inherit; font-size:16px; }
-.search-box input:focus { outline:none; border-color:#00ff88; }
+.search-box input:focus { outline:none; border-color:#ffaa00; }
 .results { }
 .result-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #00aaff; border-radius:8px; padding:16px; margin-bottom:12px; }
 .result-title { color:#fff; font-size:16px; font-weight:600; margin-bottom:8px; }
 .result-meta { display:flex; gap:16px; color:#666; font-size:12px; }
-.result-transcript { color:#00ff88; font-size:11px; margin-top:8px; }
+.result-transcript { color:#ffaa00; font-size:11px; margin-top:8px; }
 .count { color:#666; font-size:13px; margin-bottom:16px; }
 </style>
 </head><body>
@@ -3638,7 +3682,7 @@ ${query ? `<div class="count">Found ${results.length} results for "${query}"</di
 </div>
 
 </div>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Endpoints Index Page ─────────────────────────────────────────────
@@ -3765,8 +3809,9 @@ function renderEndpointsHTML() {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>API Endpoints • PracticeLife</title>
+<title>PL.OS - API</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -3778,7 +3823,7 @@ body {
 }
 .container { max-width: 1400px; margin: 0 auto; }
 h1 {
-  color: #00ff88;
+  color: #ffaa00;
   margin-bottom: 10px;
   font-size: 28px;
   font-weight: 600;
@@ -3800,7 +3845,7 @@ h1 {
   padding: 15px 20px;
 }
 .stat-value {
-  color: #00ff88;
+  color: #ffaa00;
   font-size: 32px;
   font-weight: 600;
 }
@@ -3870,7 +3915,7 @@ h1 {
 }
 .method.post {
   background: rgba(0, 255, 136, 0.1);
-  color: #00ff88;
+  color: #ffaa00;
 }
 .path {
   color: #c7cdd8;
@@ -3905,7 +3950,7 @@ h1 {
   ${serviceCards}
 
 </div>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Agent Collaboration Page ─────────────────────────────────────────
@@ -3986,9 +4031,10 @@ function renderAgentsHTML() {
   return `<!DOCTYPE html>
 <html><head>
 <meta charset="UTF-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <meta http-equiv="refresh" content="60">
-<title>Agent Collaboration • PracticeLife</title>
+<title>PL.OS - Agents</title>
 <style>
 * { box-sizing: border-box; margin: 0; padding: 0; }
 body {
@@ -4000,7 +4046,7 @@ body {
 }
 .container { max-width: 1400px; margin: 0 auto; }
 h1 {
-  color: #00ff88;
+  color: #ffaa00;
   margin-bottom: 10px;
   font-size: 28px;
   font-weight: 600;
@@ -4010,18 +4056,6 @@ h1 {
   margin-bottom: 30px;
   font-size: 14px;
 }
-nav {
-  margin-bottom: 30px;
-  padding-bottom: 20px;
-  border-bottom: 1px solid #1f2937;
-}
-nav a {
-  color: #7d8590;
-  text-decoration: none;
-  margin-right: 20px;
-  font-size: 14px;
-}
-nav a:hover { color: #00ff88; }
 .section {
   margin-bottom: 40px;
 }
@@ -4044,7 +4078,7 @@ nav a:hover { color: #00ff88; }
   padding: 15px;
 }
 .agent-card.active {
-  border-left: 3px solid #00ff88;
+  border-left: 3px solid #ffaa00;
 }
 .agent-card.parked {
   border-left: 3px solid #ffa500;
@@ -4091,7 +4125,7 @@ table {
 }
 th {
   background: #1f2937;
-  color: #00ff88;
+  color: #ffaa00;
   padding: 12px;
   text-align: left;
   font-weight: 600;
@@ -4162,7 +4196,7 @@ td {
   flex: 1;
 }
 .stat-value {
-  color: #00ff88;
+  color: #ffaa00;
   font-size: 32px;
   font-weight: 600;
 }
@@ -4238,7 +4272,7 @@ td {
   ` : ''}
 
 </div>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 server.listen(PORT, () => {
@@ -4294,15 +4328,13 @@ function renderDepsHTML() {
 
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
-<title>Ω₀ Dependencies</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Dependencies</title>
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
-h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
+h1 { color:#ffaa00; font-size:28px; margin-bottom:4px; }
 .subtitle { color:#666; margin-bottom:20px; font-size:13px; }
-.nav { display:flex; gap:16px; margin-bottom:20px; }
-.nav a { color:#555; font-size:13px; padding:4px 12px; border:1px solid #222; border-radius:6px; text-decoration:none; }
-.nav a:hover, .nav a.active { color:#00ff88; border-color:#00ff88; }
 
 .summary { display:flex; gap:16px; margin-bottom:24px; }
 .scard { background:#151515; border:1px solid #222; border-radius:8px; padding:12px 20px; text-align:center; }
@@ -4314,9 +4346,9 @@ h1 { color:#00ff88; font-size:28px; margin-bottom:4px; }
 .section { margin-bottom:32px; }
 .section-title { color:#00aaff; font-size:14px; text-transform:uppercase; letter-spacing:1px; margin-bottom:12px; padding-bottom:6px; border-bottom:1px solid #222; }
 
-.work-card { background:#111; border-left:3px solid #00ff88; border-radius:8px; padding:16px; margin-bottom:12px; }
+.work-card { background:#111; border-left:3px solid #ffaa00; border-radius:8px; padding:16px; margin-bottom:12px; }
 .work-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:8px; }
-.work-agent { font-size:16px; font-weight:bold; color:#00ff88; }
+.work-agent { font-size:16px; font-weight:bold; color:#ffaa00; }
 .work-session { font-size:11px; color:#444; font-family:monospace; }
 .work-focus { color:#999; font-size:13px; margin-bottom:12px; }
 .work-recent { margin-top:12px; padding-top:12px; border-top:1px solid #1a1a1a; }
@@ -4379,7 +4411,7 @@ setInterval(async()=>{
 }, 10000);
 </script>
 
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Tasks Page ───────────────────────────────────────────────────────
@@ -4393,9 +4425,10 @@ function renderTasksHTML() {
       blocked: prompts.prompts.filter(p => p.status === 'blocked'),
       partial: prompts.prompts.filter(p => p.status === 'partial')
     };
-    return `<!DOCTYPE html><html><head><meta charset="utf-8"><title>Tasks | Ω₀</title><style>* { margin:0; padding:0; box-sizing:border-box; } body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; } .container { max-width:1200px; margin:0 auto; } h1 { color:#00ff88; font-size:28px; margin-bottom:20px; } .status-section { margin-bottom:40px; } .status-header { color:#00aaff; font-size:20px; margin-bottom:12px; } .task-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(350px,1fr)); gap:16px; } .task-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #00ff88; border-radius:8px; padding:16px; } .task-card.in_progress { border-left-color:#00aaff; } .task-card.blocked { border-left-color:#ff4444; } .task-card.partial { border-left-color:#ffaa00; } .task-card.ready { border-left-color:#00ff88; } .task-title { color:#fff; font-size:14px; font-weight:600; margin-bottom:8px; } .task-meta { color:#666; font-size:11px; margin-bottom:4px; } .task-agent { color:#00aaff; font-size:12px; } .task-notes { background:#1a1a1a; padding:8px; margin-top:8px; font-size:11px; color:#999; border-radius:4px; }</style></head><body><div class="container">${renderNav('/tasks')}<h1>🎯 Task Delegation</h1><div class="status-section"><div class="status-header">📋 Ready (${byStatus.ready.length})</div><div class="task-grid">${byStatus.ready.map(t => `<div class="task-card ready"><div class="task-title">${t.title}</div><div class="task-meta">${t.category} · ${t.estimated_cost} · ${t.estimated_time}</div></div>`).join('')}</div></div><div class="status-section"><div class="status-header">🔄 In Progress (${byStatus.in_progress.length})</div><div class="task-grid">${byStatus.in_progress.map(t => `<div class="task-card in_progress"><div class="task-title">${t.title}</div><div class="task-meta">${t.category}</div>${t.completed_by ? `<div class="task-agent">Agent: ${t.completed_by}</div>` : ''}</div>`).join('')}</div></div><div class="status-section"><div class="status-header">✅ Complete (${byStatus.complete.length})</div><div class="task-grid">${byStatus.complete.slice(0, 6).map(t => `<div class="task-card complete" style="opacity:0.6"><div class="task-title">${t.title}</div>${t.completed_by ? `<div class="task-agent">${t.completed_by}</div>` : ''}${t.notes ? `<div class="task-notes">${t.notes.substring(0, 100)}...</div>` : ''}</div>`).join('')}</div></div>${byStatus.blocked.length > 0 ? `<div class="status-section"><div class="status-header">🚧 Blocked (${byStatus.blocked.length})</div><div class="task-grid">${byStatus.blocked.map(t => `<div class="task-card blocked"><div class="task-title">${t.title}</div>${t.notes ? `<div class="task-notes">${t.notes}</div>` : ''}</div>`).join('')}</div></div>` : ''}</div></body></html>`;
+    return `<!DOCTYPE html><html><head><meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>PL.OS - Tasks</title><style>* { margin:0; padding:0; box-sizing:border-box; } body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; } .container { max-width:1200px; margin:0 auto; } h1 { color:#ffaa00; font-size:28px; margin-bottom:20px; } .status-section { margin-bottom:40px; } .status-header { color:#00aaff; font-size:20px; margin-bottom:12px; } .task-grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(350px,1fr)); gap:16px; } .task-card { background:#0d0d0d; border:1px solid #1a1a1a; border-left:3px solid #ffaa00; border-radius:8px; padding:16px; } .task-card.in_progress { border-left-color:#00aaff; } .task-card.blocked { border-left-color:#ff4444; } .task-card.partial { border-left-color:#ffaa00; } .task-card.ready { border-left-color:#ffaa00; } .task-title { color:#fff; font-size:14px; font-weight:600; margin-bottom:8px; } .task-meta { color:#666; font-size:11px; margin-bottom:4px; } .task-agent { color:#00aaff; font-size:12px; } .task-notes { background:#1a1a1a; padding:8px; margin-top:8px; font-size:11px; color:#999; border-radius:4px; }</style></head><body><div class="container">${renderNav('/tasks')}<h1>🎯 Task Delegation</h1><div class="status-section"><div class="status-header">📋 Ready (${byStatus.ready.length})</div><div class="task-grid">${byStatus.ready.map(t => `<div class="task-card ready"><div class="task-title">${t.title}</div><div class="task-meta">${t.category} · ${t.estimated_cost} · ${t.estimated_time}</div></div>`).join('')}</div></div><div class="status-section"><div class="status-header">🔄 In Progress (${byStatus.in_progress.length})</div><div class="task-grid">${byStatus.in_progress.map(t => `<div class="task-card in_progress"><div class="task-title">${t.title}</div><div class="task-meta">${t.category}</div>${t.completed_by ? `<div class="task-agent">Agent: ${t.completed_by}</div>` : ''}</div>`).join('')}</div></div><div class="status-section"><div class="status-header">✅ Complete (${byStatus.complete.length})</div><div class="task-grid">${byStatus.complete.slice(0, 6).map(t => `<div class="task-card complete" style="opacity:0.6"><div class="task-title">${t.title}</div>${t.completed_by ? `<div class="task-agent">${t.completed_by}</div>` : ''}${t.notes ? `<div class="task-notes">${t.notes.substring(0, 100)}...</div>` : ''}</div>`).join('')}</div></div>${byStatus.blocked.length > 0 ? `<div class="status-section"><div class="status-header">🚧 Blocked (${byStatus.blocked.length})</div><div class="task-grid">${byStatus.blocked.map(t => `<div class="task-card blocked"><div class="task-title">${t.title}</div>${t.notes ? `<div class="task-notes">${t.notes}</div>` : ''}</div>`).join('')}</div></div>` : ''}</div>${PLOS_FOOTER_HTML}</body></html>`;
   } catch (e) {
-    return `<!DOCTYPE html><html><body><h1>Error loading tasks</h1><pre>${e.message}</pre></body></html>`;
+    return `<!DOCTYPE html><html><body><h1>Error loading tasks</h1><pre>${e.message}</pre>${PLOS_FOOTER_HTML}</body></html>`;
   }
 }
 
@@ -4466,7 +4499,7 @@ function renderCommandHTML() {
   const p2 = data.peretzTasks.filter(t => t.priority === 'P2' || t.priority === 'P3');
 
   const dot = (ok) => ok
-    ? '<span style="display:inline-block;width:10px;height:10px;background:#00ff88;border-radius:50%;margin-right:6px"></span>'
+    ? '<span style="display:inline-block;width:10px;height:10px;background:#22c55e;border-radius:50%;margin-right:6px"></span>'
     : '<span style="display:inline-block;width:10px;height:10px;background:#ff4444;border-radius:50%;margin-right:6px"></span>';
 
   const taskCard = (t, color) => `
@@ -4485,14 +4518,15 @@ function renderCommandHTML() {
     </div>`;
 
   return `<!DOCTYPE html><html><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="60">
-<title>Command | Ω₀</title>
+<title>PL.OS - Command</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono',Monaco,'Cascadia Code',monospace; padding:20px; font-size:14px; }
   .container { max-width:1000px; margin:0 auto; }
-  h1 { color:#00ff88; font-size:24px; margin-bottom:6px; }
+  h1 { color:#ffaa00; font-size:24px; margin-bottom:6px; }
   .subtitle { color:#555; font-size:13px; margin-bottom:20px; }
   .section { margin-bottom:30px; }
   .section-title { color:#00aaff; font-size:16px; margin-bottom:12px; font-weight:600; }
@@ -4539,7 +4573,7 @@ ${data.completedTasks.length > 0 ? `<div class="section" style="opacity:0.5">
 <div style="color:#333;font-size:11px;text-align:center;margin-top:30px">
   Source: ~/.claude/TASKS.md | Phase-lock: ~/.claude/PHASE-LOCK-STATUS.md | Auto-refresh 60s
 </div>
-</div></body></html>`;
+</div>${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Machines Page — Cross-Machine Status ─────────────────────────────
@@ -4642,20 +4676,21 @@ function getMachineStatus() {
 
 function renderMachinesHTML() {
   const m = getMachineStatus();
-  const dot = (ok) => `<span style="display:inline-block;width:12px;height:12px;background:${ok ? '#00ff88' : '#ff4444'};border-radius:50%;margin-right:8px;box-shadow:0 0 6px ${ok ? '#00ff8844' : '#ff444444'}"></span>`;
+  const dot = (ok) => `<span style="display:inline-block;width:12px;height:12px;background:${ok ? '#22c55e' : '#ff4444'};border-radius:50%;margin-right:8px;box-shadow:0 0 6px ${ok ? '#22c55e44' : '#ff444444'}"></span>`;
   const svcDot = (status) => dot(status === 'up');
 
   const totalVRAM = m.anvil.models.reduce((s, md) => s + parseFloat(md.size), 0).toFixed(1);
 
   return `<!DOCTYPE html><html><head>
-<meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"><meta name="viewport" content="width=device-width,initial-scale=1">
 <meta http-equiv="refresh" content="30">
-<title>Machines | Ω₀</title>
+<title>PL.OS - Machines</title>
 <style>
   * { margin:0; padding:0; box-sizing:border-box; }
   body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono',Monaco,monospace; padding:20px; font-size:14px; }
   .container { max-width:1100px; margin:0 auto; }
-  h1 { color:#00ff88; font-size:24px; margin-bottom:20px; }
+  h1 { color:#ffaa00; font-size:24px; margin-bottom:20px; }
   .grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr)); gap:16px; margin-bottom:24px; }
   .card { background:#111; border:1px solid #222; border-radius:10px; padding:20px; }
   .card-header { display:flex; align-items:center; margin-bottom:12px; }
@@ -4670,13 +4705,13 @@ function renderMachinesHTML() {
   .model { display:flex; justify-content:space-between; padding:4px 8px; background:#0a0a0a; border-radius:4px; margin-bottom:4px; }
   .model-name { color:#00aaff; font-size:12px; }
   .model-size { color:#555; font-size:12px; }
-  .loaded { border-left:2px solid #00ff88; }
+  .loaded { border-left:2px solid #ffaa00; }
   .services { margin-top:8px; }
   .svc { display:flex; align-items:center; padding:3px 0; font-size:13px; }
   .topology { background:#111; border:1px solid #222; border-radius:10px; padding:20px; margin-top:16px; }
   .topo-title { color:#00aaff; font-size:16px; margin-bottom:12px; }
   pre.topo { color:#555; font-size:11px; line-height:1.4; }
-  pre.topo span { color:#00ff88; }
+  pre.topo span { color:#ffaa00; }
 </style></head><body><div class="container">
 ${renderNav('machines')}
 <h1>MACHINE STATUS</h1>
@@ -4705,7 +4740,7 @@ ${renderNav('machines')}
       <div class="metric"><span class="metric-label">Ping</span><span class="metric-value">${m.anvil.ping}</span></div>
       ${m.anvil.system ? `<div class="metric"><span class="metric-label">Uptime</span><span class="metric-value">${m.anvil.system.uptime}</span></div>` : ''}
       ${m.anvil.metrics ? `
-      <div class="metric"><span class="metric-label">GPU</span><span class="metric-value" style="color:${m.anvil.metrics.gpuUsage > 50 ? '#ffaa00' : '#00ff88'}">${m.anvil.metrics.gpuUsage.toFixed(1)}%</span></div>
+      <div class="metric"><span class="metric-label">GPU</span><span class="metric-value" style="color:${m.anvil.metrics.gpuUsage > 50 ? '#ffaa00' : '#22c55e'}">${m.anvil.metrics.gpuUsage.toFixed(1)}%</span></div>
       <div class="metric"><span class="metric-label">CPU</span><span class="metric-value">E: ${m.anvil.metrics.ecpuUsage.toFixed(0)}% P: ${m.anvil.metrics.pcpuUsage.toFixed(0)}%</span></div>
       <div class="metric"><span class="metric-label">RAM</span><span class="metric-value">${m.anvil.metrics.ramUsedGB.toFixed(1)} / ${m.anvil.metrics.ramTotalGB.toFixed(0)} GB</span></div>
       <div class="metric"><span class="metric-label">Swap</span><span class="metric-value" style="color:${m.anvil.metrics.swapUsedGB > 1 ? '#ff4444' : '#888'}">${m.anvil.metrics.swapUsedGB.toFixed(2)} GB</span></div>
@@ -4762,7 +4797,7 @@ ${renderNav('machines')}
 <div style="color:#333;font-size:11px;text-align:center;margin-top:20px">
   Auto-refresh 30s | Docs: ~/.claude/HEARTH-ANVIL-COLLABORATION.md
 </div>
-</div></body></html>`;
+</div>${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 // ─── Downloads Page — File Organization Visibility + Rule Management ───
@@ -4806,7 +4841,7 @@ function getFileAgents() {
     icon: daemonRunning ? 'ON' : 'OFF',
     detail: `${daemonRuleCount} rules · fswatch ~/Downloads/`,
     lastActivity: daemonLastActivity,
-    color: daemonRunning ? '#00ff88' : '#ff4444'
+    color: daemonRunning ? '#22c55e' : '#ff4444'
   });
 
   // 2. Playwright bridge
@@ -4900,7 +4935,7 @@ function getFileAgents() {
     icon: nasAvail ? 'ON' : 'OFF',
     detail: nasAvail ? 'SMB mounted at /Volumes/home' : 'Not mounted',
     lastActivity: null,
-    color: nasAvail ? '#00ff88' : '#555'
+    color: nasAvail ? '#22c55e' : '#555'
   });
 
   return agents;
@@ -5469,28 +5504,29 @@ function handleDownloadsBrowse(dirPath, res) {
 function renderQueueHTML() {
   const API = 'https://localhost:3001/api/q';
   return `<!DOCTYPE html><html><head>
-<meta charset="utf-8"><title>Queue | Ω₀</title>
+<meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>PL.OS - Queue</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box}
 body{background:#0a0a0a;color:#e0e0e0;font-family:'SF Mono','Fira Code',monospace;padding:20px}
 .container{max-width:1400px;margin:0 auto}
-h1{color:#00ff88;font-size:24px;margin-bottom:4px}
+h1{color:#ffaa00;font-size:24px;margin-bottom:4px}
 .subtitle{color:#555;font-size:12px;margin-bottom:20px}
-a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
+a{color:#ffaa00;text-decoration:none}a:hover{text-decoration:underline}
 
 .stats-bar{display:flex;gap:12px;margin-bottom:20px;flex-wrap:wrap}
 .stat-chip{background:#111;border:1px solid #222;border-radius:8px;padding:10px 16px;min-width:100px}
 .stat-chip .label{color:#555;font-size:10px;text-transform:uppercase;letter-spacing:.5px}
-.stat-chip .val{color:#00ff88;font-size:22px;font-weight:bold}
+.stat-chip .val{color:#ffaa00;font-size:22px;font-weight:bold}
 .stat-chip .val.orange{color:#ffaa00}
 .stat-chip .val.red{color:#ff4444}
 .stat-chip .val.blue{color:#00aaff}
 
 .owner-tabs{display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap}
 .owner-tab{background:#151515;border:1px solid #222;border-radius:6px;padding:6px 16px;cursor:pointer;font-size:12px;color:#888;transition:all .2s}
-.owner-tab:hover{border-color:#00ff88;color:#ccc}
-.owner-tab.active{background:#00ff8815;border-color:#00ff88;color:#00ff88}
-.owner-tab .count{background:#00ff8825;color:#00ff88;padding:1px 6px;border-radius:4px;font-size:10px;margin-left:6px}
+.owner-tab:hover{border-color:#ffaa00;color:#ccc}
+.owner-tab.active{background:#ffaa0015;border-color:#ffaa00;color:#ffaa00}
+.owner-tab .count{background:#ffaa0025;color:#ffaa00;padding:1px 6px;border-radius:4px;font-size:10px;margin-left:6px}
 
 .board{display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:16px;margin-bottom:24px}
 .column{background:#0d0d0d;border:1px solid #1a1a1a;border-radius:8px;padding:12px}
@@ -5499,11 +5535,11 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
 .column-title.pending{color:#ffaa00}
 .column-title.in_progress{color:#00aaff}
 .column-title.blocked{color:#ff4444}
-.column-title.completed{color:#00ff88}
+.column-title.completed{color:#ffaa00}
 .column-count{font-size:11px;color:#444}
 
 .task-card{background:#111;border:1px solid #1e1e1e;border-radius:6px;padding:10px 12px;margin-bottom:8px;cursor:pointer;transition:border-color .2s}
-.task-card:hover{border-color:#00ff8844}
+.task-card:hover{border-color:#ffaa0044}
 .task-card.p1{border-left:3px solid #ff4444}
 .task-card.p2{border-left:3px solid #ffaa00}
 .task-card.p3{border-left:3px solid #00aaff}
@@ -5512,7 +5548,7 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
 .task-title{color:#e0e0e0;font-size:12px;font-weight:600;margin-bottom:4px}
 .task-meta{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
 .task-tag{font-size:10px;padding:1px 6px;border-radius:3px}
-.task-tag.owner{background:#00ff8815;color:#00ff88}
+.task-tag.owner{background:#ffaa0015;color:#ffaa00}
 .task-tag.assignee{background:#00aaff15;color:#00aaff}
 .task-tag.category{background:#aa88ff15;color:#aa88ff}
 .task-tag.priority{background:#ffaa0015;color:#ffaa00}
@@ -5522,14 +5558,14 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
 .thread-panel{display:none;position:fixed;top:0;right:0;width:500px;height:100vh;background:#0a0a0a;border-left:1px solid #222;z-index:100;overflow-y:auto;padding:20px}
 .thread-panel.open{display:block}
 .thread-close{position:absolute;top:12px;right:12px;color:#555;cursor:pointer;font-size:18px}
-.thread-title{color:#00ff88;font-size:16px;margin-bottom:4px}
+.thread-title{color:#ffaa00;font-size:16px;margin-bottom:4px}
 .thread-desc{color:#888;font-size:12px;margin-bottom:16px;white-space:pre-wrap}
 .thread-msg{background:#111;border:1px solid #1e1e1e;border-radius:6px;padding:10px;margin-bottom:8px}
 .thread-msg .msg-header{display:flex;justify-content:space-between;margin-bottom:4px}
 .thread-msg .msg-author{color:#00aaff;font-size:11px;font-weight:600}
 .thread-msg .msg-type{font-size:9px;padding:1px 4px;border-radius:3px;text-transform:uppercase}
 .thread-msg .msg-type.question{background:#ffaa0020;color:#ffaa00}
-.thread-msg .msg-type.answer{background:#00ff8820;color:#00ff88}
+.thread-msg .msg-type.answer{background:#ffaa0020;color:#ffaa00}
 .thread-msg .msg-type.ack{background:#00aaff20;color:#00aaff}
 .thread-msg .msg-type.update{background:#88888820;color:#888}
 .thread-msg .msg-type.blocker{background:#ff444420;color:#ff4444}
@@ -5539,8 +5575,8 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
 
 .msg-input{display:flex;gap:8px;margin-top:12px}
 .msg-input input{flex:1;background:#111;border:1px solid #222;border-radius:4px;padding:8px;color:#e0e0e0;font-family:inherit;font-size:12px}
-.msg-input button{background:#00ff8820;border:1px solid #00ff88;color:#00ff88;padding:8px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px}
-.msg-input button:hover{background:#00ff8840}
+.msg-input button{background:#ffaa0020;border:1px solid #ffaa00;color:#ffaa00;padding:8px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px}
+.msg-input button:hover{background:#ffaa0040}
 
 .new-task-form{background:#111;border:1px solid #222;border-radius:8px;padding:16px;margin-bottom:20px;display:none}
 .new-task-form.open{display:block}
@@ -5548,12 +5584,12 @@ a{color:#00ff88;text-decoration:none}a:hover{text-decoration:underline}
 .new-task-form textarea{height:60px;resize:vertical}
 .form-row{display:flex;gap:8px}
 .form-row>*{flex:1}
-.btn{background:#00ff8820;border:1px solid #00ff88;color:#00ff88;padding:8px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px}
-.btn:hover{background:#00ff8840}
+.btn{background:#ffaa0020;border:1px solid #ffaa00;color:#ffaa00;padding:8px 16px;border-radius:4px;cursor:pointer;font-family:inherit;font-size:12px}
+.btn:hover{background:#ffaa0040}
 .btn-secondary{background:#0d0d0d;border:1px solid #333;color:#888}
 .btn-secondary:hover{background:#222}
-.toggle-btn{color:#00ff88;cursor:pointer;font-size:12px;background:none;border:1px solid #00ff8844;padding:4px 12px;border-radius:4px;margin-bottom:16px}
-.toggle-btn:hover{background:#00ff8815}
+.toggle-btn{color:#ffaa00;cursor:pointer;font-size:12px;background:none;border:1px solid #ffaa0044;padding:4px 12px;border-radius:4px;margin-bottom:16px}
+.toggle-btn:hover{background:#ffaa0015}
 
 .footer{color:#333;font-size:10px;text-align:center;padding:16px;border-top:1px solid #111;margin-top:20px}
 </style>
@@ -5702,7 +5738,7 @@ async function openThread(id) {
 
   let statusBtns = '<div style="margin:12px 0;display:flex;gap:6px">';
   ['pending','in_progress','blocked','completed'].forEach(s => {
-    const active = task.status === s ? 'background:#00ff8830;' : '';
+    const active = task.status === s ? 'background:#ffaa0030;' : '';
     statusBtns += '<button style="' + active + 'border:1px solid #333;background:#111;color:#aaa;padding:4px 10px;border-radius:4px;cursor:pointer;font-size:10px;font-family:inherit" onclick="updateStatus(' + id + ',\\'' + s + '\\')">' + s.replace('_',' ') + '</button>';
   });
   statusBtns += '</div>';
@@ -5782,7 +5818,7 @@ async function intervene(id) {
 loadAll();
 setInterval(loadAll, 15000);
 </script>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 function renderFilesHTML() {
@@ -5907,12 +5943,13 @@ function renderFilesHTML() {
 
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
-<title>Files | PracticeLife</title>
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Files</title>
 <meta http-equiv="refresh" content="30">
 <style>
 * { margin:0; padding:0; box-sizing:border-box; }
 body { background:#0a0a0a; color:#e0e0e0; font-family:'SF Mono','Fira Code',monospace; padding:20px; }
-h1 { color:#00ff88; font-size:24px; margin-bottom:4px; }
+h1 { color:#ffaa00; font-size:24px; margin-bottom:4px; }
 h2 { font-size:16px; margin:20px 0 10px 0; padding-bottom:6px; border-bottom:1px solid #222; }
 .subtitle { color:#666; font-size:12px; margin-bottom:16px; }
 
@@ -5920,7 +5957,7 @@ h2 { font-size:16px; margin:20px 0 10px 0; padding-bottom:6px; border-bottom:1px
 .scard { background:#151515; border:1px solid #222; border-radius:8px; padding:10px 16px; text-align:center; flex:1; min-width:100px; }
 .scard .num { font-size:28px; font-weight:bold; }
 .scard .label { color:#555; font-size:10px; text-transform:uppercase; letter-spacing:1px; margin-top:2px; }
-.scard.daemon-on .num { color:#00ff88; }
+.scard.daemon-on .num { color:#22c55e; }
 .scard.daemon-off .num { color:#ff4444; }
 
 .grid { display:grid; grid-template-columns:1fr 1fr; gap:20px; }
@@ -5937,7 +5974,7 @@ td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
 .activity-item { display:flex; align-items:center; gap:8px; padding:6px 0; border-bottom:1px solid #1a1a1a; font-size:12px; }
 .activity-time { color:#555; font-size:11px; min-width:50px; }
 .activity-file { color:#ccc; flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-.activity-arrow { color:#00ff88; font-weight:bold; }
+.activity-arrow { color:#ffaa00; font-weight:bold; }
 .activity-dest { color:#888; font-size:11px; max-width:200px; overflow:hidden; text-overflow:ellipsis; }
 .activity-rule { color:#00aaff; font-size:10px; padding:2px 6px; background:#00aaff11; border-radius:3px; }
 
@@ -5961,7 +5998,7 @@ td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
 .rule-num { color:#555; font-size:11px; min-width:24px; }
 .rule-name { color:#e0e0e0; font-size:13px; font-weight:bold; flex:1; }
 .rule-action { font-size:10px; padding:2px 6px; border-radius:3px; text-transform:uppercase; }
-.rule-action.move { color:#00ff88; background:#00ff8811; }
+.rule-action.move { color:#ffaa00; background:#ffaa0011; }
 .rule-action.copy { color:#00aaff; background:#00aaff11; }
 .rule-controls { display:flex; gap:4px; }
 .rule-controls button { background:none; border:1px solid #333; color:#888; border-radius:4px; padding:2px 6px; cursor:pointer; font-size:12px; }
@@ -5974,21 +6011,21 @@ td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
 .rule-dest { color:#555; font-size:11px; margin-top:4px; }
 
 .add-rule-btn { display:block; width:100%; background:#151515; border:2px dashed #333; color:#555; padding:12px; border-radius:8px; cursor:pointer; font-size:13px; font-family:inherit; margin-top:8px; }
-.add-rule-btn:hover { border-color:#00ff88; color:#00ff88; }
+.add-rule-btn:hover { border-color:#ffaa00; color:#ffaa00; }
 
 .modal-overlay { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.8); z-index:100; justify-content:center; align-items:center; }
 .modal-overlay.active { display:flex; }
 .modal { background:#151515; border:1px solid #333; border-radius:12px; padding:24px; width:500px; max-width:90vw; }
-.modal h3 { color:#00ff88; margin-bottom:16px; font-size:16px; }
+.modal h3 { color:#ffaa00; margin-bottom:16px; font-size:16px; }
 .modal label { display:block; color:#888; font-size:11px; margin-bottom:4px; margin-top:12px; text-transform:uppercase; letter-spacing:1px; }
 .modal input, .modal select { width:100%; background:#0a0a0a; border:1px solid #333; color:#e0e0e0; padding:8px 12px; border-radius:6px; font-family:inherit; font-size:13px; }
-.modal input:focus, .modal select:focus { outline:none; border-color:#00ff88; }
+.modal input:focus, .modal select:focus { outline:none; border-color:#ffaa00; }
 .modal .modal-actions { display:flex; gap:8px; margin-top:20px; justify-content:flex-end; }
 .modal button { padding:8px 16px; border-radius:6px; border:1px solid #333; background:#1a1a1a; color:#e0e0e0; cursor:pointer; font-family:inherit; font-size:13px; }
-.modal button.primary { background:#00ff8822; border-color:#00ff88; color:#00ff88; }
+.modal button.primary { background:#ffaa0022; border-color:#ffaa00; color:#ffaa00; }
 .modal button:hover { opacity:0.8; }
 
-.toast { position:fixed; bottom:20px; right:20px; background:#151515; border:1px solid #00ff88; color:#00ff88; padding:12px 20px; border-radius:8px; font-size:13px; z-index:200; display:none; }
+.toast { position:fixed; bottom:20px; right:20px; background:#151515; border:1px solid #ffaa00; color:#ffaa00; padding:12px 20px; border-radius:8px; font-size:13px; z-index:200; display:none; }
 .toast.error { border-color:#ff4444; color:#ff4444; }
 .toast.active { display:block; animation: fadeIn 0.3s; }
 @keyframes fadeIn { from { opacity:0; transform:translateY(10px); } to { opacity:1; transform:translateY(0); } }
@@ -5997,18 +6034,18 @@ td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
 
 /* Night mode badge */
 .night-badge { display:inline-block; padding:3px 10px; border-radius:4px; font-size:11px; margin-left:8px; }
-.night-badge.active { background:#00ff8822; color:#00ff88; border:1px solid #00ff8844; }
+.night-badge.active { background:#ffaa0022; color:#ffaa00; border:1px solid #ffaa0044; }
 .night-badge.inactive { background:#ffaa0022; color:#ffaa00; border:1px solid #ffaa0044; }
 
 /* Preview panel */
 .preview-btn { background:none; border:none; cursor:pointer; font-size:14px; opacity:0.4; padding:0; }
 .preview-btn:hover { opacity:1; }
 .fname-click { cursor:pointer; color:#ccc; }
-.fname-click:hover { color:#00ff88; text-decoration:underline; }
+.fname-click:hover { color:#ffaa00; text-decoration:underline; }
 .preview-panel { display:none; position:fixed; top:0; right:0; width:50vw; height:100vh; background:#0d0d0d; border-left:2px solid #222; z-index:50; overflow:auto; }
 .preview-panel.active { display:block; }
 .preview-header { display:flex; justify-content:space-between; align-items:center; padding:12px 16px; border-bottom:1px solid #222; }
-.preview-header h3 { color:#00ff88; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
+.preview-header h3 { color:#ffaa00; font-size:14px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1; }
 .preview-close { background:none; border:1px solid #333; color:#ff4444; border-radius:4px; padding:4px 10px; cursor:pointer; font-size:14px; }
 .preview-meta { padding:8px 16px; font-size:11px; color:#888; display:flex; flex-wrap:wrap; gap:12px; border-bottom:1px solid #1a1a1a; }
 .preview-meta .meta-item { display:flex; gap:4px; }
@@ -6027,7 +6064,7 @@ td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
 
 /* Folder picker */
 .browse-btn { background:none; border:1px solid #333; border-radius:4px; padding:2px 6px; cursor:pointer; font-size:13px; }
-.browse-btn:hover { border-color:#00ff88; }
+.browse-btn:hover { border-color:#ffaa00; }
 /* Agents bar */
 .agents-bar { display:flex; gap:10px; margin-bottom:16px; flex-wrap:wrap; }
 .agent-card { background:#111; border:1px solid #222; border-radius:8px; padding:8px 14px; display:flex; align-items:center; gap:10px; flex:1; min-width:180px; }
@@ -6049,8 +6086,8 @@ td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
 .sugg-header { display:flex; align-items:center; gap:8px; flex-wrap:wrap; }
 .sugg-pattern { color:#00aaff; font-weight:bold; font-size:13px; }
 .sugg-keywords { color:#888; font-size:10px; padding:1px 6px; background:#1a1a1a; border-radius:3px; }
-.sugg-arrow { color:#00ff88; }
-.sugg-dest { color:#00ff88; font-size:12px; }
+.sugg-arrow { color:#ffaa00; }
+.sugg-dest { color:#ffaa00; font-size:12px; }
 .sugg-count { color:#555; font-size:10px; margin-left:auto; }
 .sugg-examples { color:#444; font-size:10px; margin-top:3px; }
 
@@ -6098,12 +6135,12 @@ td { padding:6px 8px; border-bottom:1px solid #1a1a1a; }
 .actions-cell { display:flex; gap:4px; align-items:center; flex-wrap:wrap; }
 .folder-list { max-height:400px; overflow-y:auto; }
 .folder-item { display:flex; align-items:center; gap:8px; padding:6px 8px; cursor:pointer; border-radius:4px; font-size:13px; color:#ccc; }
-.folder-item:hover { background:#1a1a1a; color:#00ff88; }
+.folder-item:hover { background:#1a1a1a; color:#ffaa00; }
 .folder-item .icon { color:#ffaa00; }
 .folder-path { background:#0a0a0a; border:1px solid #333; border-radius:6px; padding:6px 10px; color:#888; font-size:12px; margin-bottom:12px; display:flex; align-items:center; gap:8px; }
 .folder-path input { flex:1; background:none; border:none; color:#e0e0e0; font-family:inherit; font-size:12px; outline:none; }
 .folder-up { background:none; border:1px solid #333; color:#888; border-radius:4px; padding:2px 8px; cursor:pointer; font-size:11px; }
-.folder-up:hover { border-color:#00ff88; color:#00ff88; }
+.folder-up:hover { border-color:#ffaa00; color:#ffaa00; }
 </style>
 </head><body>
 ${renderNav('files')}
@@ -6124,7 +6161,7 @@ ${agents.map(a => `  <div class="agent-card" style="border-color:${a.color}33">
 
 <div class="summary">
   <div class="scard"><div class="num" style="color:#ffaa00">${data.stats.totalPending}</div><div class="label">Pending</div></div>
-  <div class="scard"><div class="num" style="color:#00ff88">${data.stats.totalMoved}</div><div class="label">Routed</div></div>
+  <div class="scard"><div class="num" style="color:#22c55e">${data.stats.totalMoved}</div><div class="label">Routed</div></div>
   <div class="scard"><div class="num" style="color:#ff4444">${data.stats.totalNoRule}</div><div class="label">No Rule</div></div>
   <div class="scard"><div class="num" style="color:#00aaff">${data.stats.totalRules}</div><div class="label">Rules</div></div>
   <div class="scard"><div class="num" style="color:#aa55ff">${data.stats.totalCorrections}</div><div class="label">Corrections</div></div>
@@ -6142,7 +6179,7 @@ ${agents.map(a => `  <div class="agent-card" style="border-color:${a.color}33">
   </div>
 
   <div class="panel">
-    <h2 style="color:#00ff88">Recent Activity</h2>
+    <h2 style="color:#ffaa00">Recent Activity</h2>
     ${activityItems || '<div style="color:#555;text-align:center;padding:20px">No recent activity in log</div>'}
     ${noRuleItems.length ? `<h2 style="color:#ff4444;margin-top:16px">Unmatched Files</h2>${noRuleHTML}` : ''}
   </div>
@@ -6160,7 +6197,7 @@ ${agents.map(a => `  <div class="agent-card" style="border-color:${a.color}33">
       let totalFiles = 0, totalSize = '';
       sources.forEach(s => { counts[s.pipelineStatus] = (counts[s.pipelineStatus] || 0) + 1; totalFiles += (s.fileCount || 0); });
       return `<div class="ps-card" onclick="filterSources('all')"><div class="ps-num" style="color:#00aaff">${sources.length}</div><div class="ps-label">Total</div></div>
-        <div class="ps-card" onclick="filterSources('complete')"><div class="ps-num" style="color:#00ff88">${counts.complete}</div><div class="ps-label">Complete</div></div>
+        <div class="ps-card" onclick="filterSources('complete')"><div class="ps-num" style="color:#22c55e">${counts.complete}</div><div class="ps-label">Complete</div></div>
         <div class="ps-card" onclick="filterSources('active')"><div class="ps-num" style="color:#00aaff">${counts.active}</div><div class="ps-label">Active</div></div>
         <div class="ps-card" onclick="filterSources('available')"><div class="ps-num" style="color:#ffaa00">${counts.available}</div><div class="ps-label">Available</div></div>
         <div class="ps-card" onclick="filterSources('none')"><div class="ps-num" style="color:#ff4444">${counts.none}</div><div class="ps-label">No Pipeline</div></div>
@@ -6174,7 +6211,7 @@ ${agents.map(a => `  <div class="agent-card" style="border-color:${a.color}33">
     ${(() => {
       const typeCounts = {};
       sources.forEach(s => { typeCounts[s.type] = (typeCounts[s.type] || 0) + 1; });
-      const typeColors2 = { contacts: '#ff6600', email: '#ffaa00', photos: '#00aaff', voice: '#aa55ff', documents: '#00ff88', financial: '#00ff88', archives: '#555', calendar: '#ff66aa', tasks: '#ff9900', automation: '#66ccff' };
+      const typeColors2 = { contacts: '#ff6600', email: '#ffaa00', photos: '#00aaff', voice: '#aa55ff', documents: '#22c55e', financial: '#22c55e', archives: '#555', calendar: '#ff66aa', tasks: '#ff9900', automation: '#66ccff' };
       return Object.entries(typeCounts).sort((a,b) => b[1] - a[1]).map(([type, count]) =>
         `<button class="type-filter" data-type="${type}" onclick="filterByType('${type}')" style="--filter-color:${typeColors2[type] || '#555'}">${type} (${count})</button>`
       ).join('');
@@ -6183,11 +6220,11 @@ ${agents.map(a => `  <div class="agent-card" style="border-color:${a.color}33">
 
   <div class="sources-grid" id="sourcesGrid">
     ${sources.length > 0 ? sources.map(s => {
-      const typeColors = { contacts: '#ff6600', email: '#ffaa00', photos: '#00aaff', voice: '#aa55ff', documents: '#00ff88', financial: '#00ff88', code: '#888', archives: '#555', calendar: '#ff66aa', tasks: '#ff9900', automation: '#66ccff' };
+      const typeColors = { contacts: '#ff6600', email: '#ffaa00', photos: '#00aaff', voice: '#aa55ff', documents: '#22c55e', financial: '#22c55e', code: '#888', archives: '#555', calendar: '#ff66aa', tasks: '#ff9900', automation: '#66ccff' };
       const typeIcons = { contacts: '&#x1F464;', email: '&#x2709;', photos: '&#x1F4F7;', voice: '&#x1F3A4;', documents: '&#x1F4C4;', financial: '&#x1F4B0;', code: '&#x2699;', archives: '&#x1F4E6;', calendar: '&#x1F4C5;', tasks: '&#x2705;', automation: '&#x26A1;' };
       const color = typeColors[s.type] || '#555';
       const icon = typeIcons[s.type] || '&#x1F4C1;';
-      const pipeline = s.pipelineStatus === 'complete' ? '<span style="color:#00ff88">complete</span>'
+      const pipeline = s.pipelineStatus === 'complete' ? '<span style="color:#22c55e">complete</span>'
         : s.pipelineStatus === 'active' ? '<span style="color:#00aaff">active</span>'
         : s.pipelineStatus === 'available' ? '<span style="color:#ffaa00">available</span>'
         : '<span style="color:#555">none</span>';
@@ -6213,7 +6250,7 @@ ${agents.map(a => `  <div class="agent-card" style="border-color:${a.color}33">
   <div style="color:#555;font-size:11px;margin-bottom:8px">Real-time log of what Claude agents are doing with your files. Auto-refreshes every 30s.</div>
   <div class="activity-feed">
     ${activityFeed.length > 0 ? activityFeed.slice(0, 20).map(a => {
-      const statusColor = a.status === 'done' ? '#00ff88' : a.status === 'running' ? '#00aaff' : a.status === 'error' ? '#ff4444' : '#555';
+      const statusColor = a.status === 'done' ? '#22c55e' : a.status === 'running' ? '#00aaff' : a.status === 'error' ? '#ff4444' : '#555';
       const time = new Date(a.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
       const shortTarget = (a.target || '').replace(process.env.HOME, '~');
       return `<div class="feed-item">
@@ -6246,7 +6283,7 @@ ${data.corrections.length ? `<div style="margin-top:20px">
       <span style="color:#ccc;flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${c.filename}</span>
       <span style="color:#ff4444">${shortFrom}</span>
       <span style="color:#aa55ff">→</span>
-      <span style="color:#00ff88">${shortTo}</span>
+      <span style="color:#ffaa00">${shortTo}</span>
     </div>`;
   }).join('')}
 </div>` : ''}
@@ -6261,7 +6298,7 @@ ${quarantine.length > 0 ? `<div style="margin-top:20px">
       <span class="q-date">${q.date}</span>
       <span class="q-file" title="${q.filename}">${q.filename.length > 40 ? q.filename.slice(0, 37) + '...' : q.filename}</span>
       <span class="q-size">${shortSize}</span>
-      <button class="small-btn" onclick="restoreQuarantine('${escPath}')" style="color:#00ff88;border-color:#00ff8844">Restore</button>
+      <button class="small-btn" onclick="restoreQuarantine('${escPath}')" style="color:#ffaa00;border-color:#ffaa0044">Restore</button>
       <button class="small-btn" onclick="deleteQuarantine('${escPath}','${q.filename.replace(/'/g, "\\'")}')" style="color:#ff4444;border-color:#ff444444">Delete</button>
     </div>`;
   }).join('')}
@@ -6511,7 +6548,7 @@ async function showPreview(filename) {
     let metaHTML = '';
     metaHTML += '<div class="meta-item"><span class="meta-label">Size:</span><span class="meta-value">' + formatBytes(m.size) + '</span></div>';
     metaHTML += '<div class="meta-item"><span class="meta-label">Type:</span><span class="meta-value">' + (m.mime || m.ext) + '</span></div>';
-    if (m.pdfTitle) metaHTML += '<div class="meta-item"><span class="meta-label">PDF Title:</span><span class="meta-value" style="color:#00ff88">' + m.pdfTitle + '</span></div>';
+    if (m.pdfTitle) metaHTML += '<div class="meta-item"><span class="meta-label">PDF Title:</span><span class="meta-value" style="color:#ffaa00">' + m.pdfTitle + '</span></div>';
     if (m.pdfPages) metaHTML += '<div class="meta-item"><span class="meta-label">Pages:</span><span class="meta-value">' + m.pdfPages + '</span></div>';
     if (m.pdfDate) metaHTML += '<div class="meta-item"><span class="meta-label">PDF Date:</span><span class="meta-value" style="color:#ffaa00">' + m.pdfDate + '</span></div>';
     if (m.imgWidth) metaHTML += '<div class="meta-item"><span class="meta-label">Dimensions:</span><span class="meta-value">' + m.imgWidth + 'x' + m.imgHeight + '</span></div>';
@@ -6605,7 +6642,7 @@ async function browseTo(dir) {
 
 function selectFolder(el, path) {
   document.querySelectorAll('.folder-item').forEach(i => i.style.background = '');
-  el.style.background = '#00ff8822';
+  el.style.background = '#ffaa0022';
   folderPickerPath = path;
   document.getElementById('folderPathInput').value = path.replace('${process.env.HOME}', '~');
 }
@@ -6654,7 +6691,7 @@ function showSourceDetail(id) {
   const shortPath = (s.path || '').replace('${process.env.HOME}', '~');
 
   // Build rich detail view
-  const pipelineColors = { complete: '#00ff88', active: '#00aaff', available: '#ffaa00', none: '#ff4444' };
+  const pipelineColors = { complete: '#22c55e', active: '#00aaff', available: '#ffaa00', none: '#ff4444' };
   const pColor = pipelineColors[s.pipelineStatus] || '#555';
   let html = '<div style="display:grid;grid-template-columns:auto 1fr;gap:4px 12px;font-size:12px;margin-bottom:12px">';
   html += '<span style="color:#555">Path:</span><span style="color:#888;user-select:all">' + shortPath + '</span>';
@@ -6741,7 +6778,7 @@ setInterval(async () => {
     if (data.activity && data.activity.length > 0) {
       const feed = document.querySelector('.activity-feed');
       if (!feed) return;
-      const statusColors = { done: '#00ff88', running: '#00aaff', error: '#ff4444' };
+      const statusColors = { done: '#22c55e', running: '#00aaff', error: '#ff4444' };
       feed.innerHTML = data.activity.slice(0, 20).map(a => {
         const sc = statusColors[a.status] || '#555';
         const time = new Date(a.timestamp).toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
@@ -6752,7 +6789,7 @@ setInterval(async () => {
   } catch(e) { /* silent fail */ }
 }, 30000);
 </script>
-</body></html>`;
+${PLOS_FOOTER_HTML}</body></html>`;
 }
 
 
