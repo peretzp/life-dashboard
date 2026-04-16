@@ -28,3 +28,4 @@ credentials.*
 *.http-backup
 *.log
 *.err
+data/

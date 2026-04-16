@@ -455,10 +455,123 @@ const PLOS_NAV_CSS = `
     .plos-hamburger { display: block; }
   }
   @media (min-width: 901px) { .plos-nav .nav-group-label { display: none; } }
+
+  /* ─── Mobile polish (≤600px) ─── */
+  @media (max-width: 600px) {
+    .grid { grid-template-columns: 1fr !important; gap: 12px !important; }
+    .agent-grid { grid-template-columns: 1fr !important; }
+    .agent-card { grid-column: span 1 !important; }
+    .two-col, .two { grid-template-columns: 1fr !important; }
+    .sg { grid-template-columns: 1fr !important; }
+    .prompt-grid { grid-template-columns: 1fr !important; }
+    .card .value { font-size: 24px; }
+    .section { padding: 12px; margin-bottom: 12px; }
+    h1 { font-size: 20px !important; }
+    h2 { font-size: 16px !important; }
+    table { display: block; overflow-x: auto; -webkit-overflow-scrolling: touch; white-space: nowrap; }
+    table th, table td { padding: 6px 8px !important; font-size: 12px !important; }
+    .container, .main, body > div { padding-left: 12px !important; padding-right: 12px !important; }
+    a, button, .clickable { min-height: 44px; min-width: 44px; }
+    .plos-fb-popover { width: 240px; right: 0; }
+    .volumes { flex-direction: column; }
+  }
 `;
 
 const PLOS_FOOTER_HTML = '<div class="plos-footer"><span class="omega-mark">Ω₀</span> PL.OS — PracticeLife Operating System</div>' +
-  '<script>document.querySelector(".plos-hamburger")?.addEventListener("click",function(){document.querySelector(".plos-nav")?.classList.toggle("open")});document.querySelectorAll(".plos-nav a").forEach(a=>a.addEventListener("click",()=>{document.querySelector(".plos-nav")?.classList.remove("open")}));</script>';
+  '<script>document.querySelector(".plos-hamburger")?.addEventListener("click",function(){document.querySelector(".plos-nav")?.classList.toggle("open")});document.querySelectorAll(".plos-nav a").forEach(a=>a.addEventListener("click",()=>{document.querySelector(".plos-nav")?.classList.remove("open")}));</script>' +
+  `<style>
+.plos-fb-trigger{position:absolute;top:8px;right:8px;width:24px;height:24px;border-radius:50%;background:rgba(255,170,0,0.1);border:1px solid rgba(255,170,0,0.2);color:#ffaa00;font-size:12px;cursor:pointer;display:flex;align-items:center;justify-content:center;opacity:0;transition:opacity 0.2s;z-index:10;}
+.plos-fb-parent:hover .plos-fb-trigger,.plos-fb-trigger:focus{opacity:1;}
+.plos-fb-trigger:hover{background:rgba(255,170,0,0.2);border-color:#ffaa00;transform:scale(1.1);}
+.plos-fb-trigger.has-fb{opacity:0.6;background:rgba(255,170,0,0.15);}
+.plos-fb-popover{display:none;position:absolute;top:36px;right:8px;width:280px;background:#1a1a2e;border:1px solid #ffaa00;border-radius:8px;padding:12px;z-index:100;box-shadow:0 8px 24px rgba(0,0,0,0.6);}
+.plos-fb-popover.open{display:block;}
+.plos-fb-popover textarea{width:100%;height:60px;background:#0d1117;border:1px solid #333;border-radius:4px;color:#e0e0e0;padding:8px;font-family:inherit;font-size:12px;resize:vertical;}
+.plos-fb-popover textarea:focus{outline:none;border-color:#ffaa00;}
+.plos-fb-popover .fb-submit{margin-top:8px;padding:4px 12px;background:#ffaa00;color:#0a0a0a;border:none;border-radius:4px;font-size:11px;font-weight:bold;cursor:pointer;}
+.plos-fb-popover .fb-submit:hover{background:#ffcc44;}
+.plos-fb-popover .fb-label{font-size:10px;color:#888;margin-bottom:6px;text-transform:uppercase;letter-spacing:1px;}
+.plos-fb-popover .fb-history{margin-top:8px;max-height:100px;overflow-y:auto;font-size:11px;color:#888;}
+.plos-fb-popover .fb-history-item{padding:4px 0;border-top:1px solid #222;}
+</style>
+<script>
+(function(){
+  const page = location.pathname || '/';
+  let allFeedback = [];
+
+  fetch('/api/feedback').then(r=>r.json()).then(d=>{allFeedback=d;markExisting();}).catch(()=>{});
+
+  function initFeedback(){
+    const targets = document.querySelectorAll('.section, .card, .agent-card, [id$="-details"]');
+    targets.forEach((el,i) => {
+      if(el.closest('.plos-footer') || el.closest('.plos-nav')) return;
+      const id = el.id || el.querySelector('h2,h3,h4')?.textContent?.trim()?.slice(0,40) || 'element-'+i;
+      el.style.position = el.style.position || 'relative';
+      el.classList.add('plos-fb-parent');
+      el.dataset.fbId = id;
+
+      const trigger = document.createElement('button');
+      trigger.className = 'plos-fb-trigger';
+      trigger.innerHTML = '✎';
+      trigger.title = 'Leave feedback on this element';
+      trigger.dataset.fbId = id;
+
+      const popover = document.createElement('div');
+      popover.className = 'plos-fb-popover';
+      popover.innerHTML = '<div class="fb-label">Feedback: '+id.slice(0,30)+'</div>'+
+        '<textarea placeholder="Design or function feedback..."></textarea>'+
+        '<button class="fb-submit">Send</button>'+
+        '<div class="fb-history"></div>';
+
+      trigger.addEventListener('click', (e) => {
+        e.stopPropagation();
+        document.querySelectorAll('.plos-fb-popover.open').forEach(p=>{if(p!==popover)p.classList.remove('open');});
+        popover.classList.toggle('open');
+        if(popover.classList.contains('open')){
+          const hist = allFeedback.filter(f=>f.page===page&&f.sectionId===id);
+          const histEl = popover.querySelector('.fb-history');
+          histEl.innerHTML = hist.map(h=>'<div class="fb-history-item">'+h.text+'<br><span style="color:#555">'+new Date(h.timestamp).toLocaleString()+'</span></div>').join('');
+          popover.querySelector('textarea').focus();
+        }
+      });
+
+      popover.querySelector('.fb-submit').addEventListener('click', () => {
+        const text = popover.querySelector('textarea').value.trim();
+        if(!text) return;
+        const item = {page, sectionId:id, text};
+        fetch('/api/feedback',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(item)})
+          .then(r=>r.json()).then(d=>{
+            allFeedback.push({...item,timestamp:new Date().toISOString()});
+            popover.querySelector('textarea').value='';
+            popover.classList.remove('open');
+            trigger.classList.add('has-fb');
+            trigger.innerHTML = '✎ '+(allFeedback.filter(f=>f.page===page&&f.sectionId===id).length);
+          });
+      });
+
+      el.appendChild(trigger);
+      el.appendChild(popover);
+    });
+  }
+
+  function markExisting(){
+    document.querySelectorAll('.plos-fb-trigger').forEach(t=>{
+      const id = t.dataset.fbId;
+      const count = allFeedback.filter(f=>f.page===page&&f.sectionId===id).length;
+      if(count>0){t.classList.add('has-fb');t.innerHTML='✎ '+count;}
+    });
+  }
+
+  if(document.readyState==='loading'){document.addEventListener('DOMContentLoaded',initFeedback);}
+  else{initFeedback();}
+
+  document.addEventListener('click',(e)=>{
+    if(!e.target.closest('.plos-fb-popover')&&!e.target.closest('.plos-fb-trigger')){
+      document.querySelectorAll('.plos-fb-popover.open').forEach(p=>p.classList.remove('open'));
+    }
+  });
+})();
+</script>`;
 
 function renderNav(activePage = 'dashboard') {
   const groups = [
@@ -466,6 +579,7 @@ function renderNav(activePage = 'dashboard') {
       { path: '/', name: 'Home', key: 'dashboard' },
       { path: '/command', name: 'Command', key: 'command' },
       { path: '/machines', name: 'Machines', key: 'machines' },
+      { path: '/devices', name: 'Devices', key: 'devices' },
     ]},
     { label: 'Operations', pages: [
       { path: '/agents', name: 'Agents', key: 'agents' },
@@ -477,7 +591,6 @@ function renderNav(activePage = 'dashboard') {
       { path: '/stream', name: 'Stream', key: 'stream' },
       { path: '/blockers', name: 'Convergence', key: 'blockers' },
       { path: '/threads', name: 'Threads', key: 'threads' },
-      { path: '/deps', name: 'Dependencies', key: 'deps' },
     ]},
     { label: 'Reference', pages: [
       { path: '/cheatsheet', name: 'Docs', key: 'cheatsheet' },
@@ -675,14 +788,11 @@ ${renderNav('dashboard')}
       <tr><td><strong>Cursor Pro</strong></td><td style="text-align:right; color:#ff4444;"><strong>$20.00/mo</strong></td></tr>
       <tr><td style="padding-left:16px; color:#888; font-size:12px;">Unlimited tab completions + agent mode</td><td></td></tr>
       <tr style="height:12px;"><td colspan="2"></td></tr>
-      <tr><td><strong>Claude Code / Anthropic API</strong></td><td style="text-align:right; color:#888;">Check console ⤵</td></tr>
-      <tr><td colspan="2" style="padding-top:4px; font-size:12px; color:#888;">
-        → <a href="https://console.anthropic.com/settings/billing" target="_blank" style="color:#ffaa00;">console.anthropic.com/settings/billing</a><br>
-        <span style="color:#666;">Depends on: Claude Pro subscription ($20/mo unlimited) vs API credits (pay-per-token)</span>
-      </td></tr>
+      <tr><td><strong>Claude Max (Pro)</strong></td><td style="text-align:right; color:#ff4444;"><strong>$100.00/mo</strong></td></tr>
+      <tr><td style="padding-left:16px; color:#888; font-size:12px;">Unlimited Claude Code + Desktop + API credits</td><td></td></tr>
       <tr style="height:12px;"><td colspan="2"></td></tr>
-      <tr style="border-top:1px solid #333;"><td><strong>Total Known</strong></td><td style="text-align:right; color:#ff4444;"><strong>$20-40/mo</strong></td></tr>
-      <tr><td colspan="2" style="font-size:11px; color:#666; padding-top:4px;">Cursor confirmed · Claude depends on plan</td></tr>
+      <tr style="border-top:1px solid #333;"><td><strong>Total Known</strong></td><td style="text-align:right; color:#ff4444;"><strong>$120.00/mo</strong></td></tr>
+      <tr><td colspan="2" style="font-size:11px; color:#666; padding-top:4px;">Cursor $20 + Claude Max $100 · <a href="https://console.anthropic.com/settings/billing" target="_blank" style="color:#ffaa00;">billing →</a></td></tr>
     </table>
   </div>
 
@@ -749,7 +859,7 @@ ${renderNav('dashboard')}
     <div class="card clickable" data-metric="prompts" data-label="Prompts">
       <h3>Prompts</h3>
       <div class="value" id="v-prompts">${state.agents.promptTotal}</div>
-      <div class="sub">${state.agents.promptSessions} sessions · <a href="https://localhost:3002" style="color:#ffaa00;font-size:11px">browse →</a></div>
+      <div class="sub">${state.agents.promptSessions} sessions · <a href="https://hearth.local:3002" style="color:#ffaa00;font-size:11px">browse →</a></div>
     </div>
     <div class="card clickable" data-metric="sessions" data-label="Sessions">
       <h3>Sessions</h3>
@@ -762,8 +872,12 @@ ${renderNav('dashboard')}
 <div class="section">
   <h2>Connected Drives</h2>
   <div class="volumes">
-    ${state.system.volumes.map(v => `<div class="vol">${v}</div>`).join('')}
-    ${state.system.volumes.includes('Elements') ? '' : '<div class="vol missing">⚠ Elements — NOT DETECTED</div>'}
+    ${state.system.volumes
+      .filter(v => v && !v.includes('Backups of Hearth') && !v.includes('TimeMachine') && v !== 'com.apple.TimeMachine.localsnapshots')
+      .map(v => {
+        const name = v === 'Macintosh HD' ? 'Hearth / HD' : v === 'home' ? 'NAS / home' : v;
+        return `<div class="vol">${name}</div>`;
+      }).join('')}
   </div>
 </div>
 
@@ -795,14 +909,14 @@ ${renderNav('dashboard')}
   <div class="agent-grid">
     <div class="agent-card">
       <h4>Services</h4>
-      <div class="agent-status"><span class="dot live"></span> <a href="https://localhost:3000" style="color:#e0e0e0">Dashboard</a> <span style="color:#555">:3000</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.apiLive ? 'live' : 'down'}"></span> <a href="https://localhost:3001" style="color:#e0e0e0">PracticeLife API</a> <span style="color:#555">:3001</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.promptBrowserLive ? 'live' : 'down'}"></span> <a href="https://localhost:3002" style="color:#e0e0e0">Prompt Browser</a> <span style="color:#555">:3002</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.contactVerifyLive ? 'live' : 'down'}"></span> <a href="https://localhost:3003" style="color:#e0e0e0">Contact Verify</a> <span style="color:#555">:3003</span></div>
+      <div class="agent-status"><span class="dot live"></span> <a href="https://hearth.local:3000" style="color:#e0e0e0">Dashboard</a> <span style="color:#555">:3000</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.apiLive ? 'live' : 'down'}"></span> <a href="https://hearth.local:3001" style="color:#e0e0e0">PracticeLife API</a> <span style="color:#555">:3001</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.promptBrowserLive ? 'live' : 'down'}"></span> <a href="https://hearth.local:3002" style="color:#e0e0e0">Prompt Browser</a> <span style="color:#555">:3002</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.contactVerifyLive ? 'live' : 'down'}"></span> <a href="https://hearth.local:3003" style="color:#e0e0e0">Contact Verify</a> <span style="color:#555">:3003</span></div>
       <div class="agent-status"><span class="dot ${state.agents.downloadDaemonLive ? 'live' : 'down'}"></span> Download Daemon <span style="color:#555">(bg)</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.litellmLive ? 'live' : 'down'}"></span> <a href="http://localhost:4000" style="color:#e0e0e0">LiteLLM Gateway</a> <span style="color:#555">:4000</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.ollamaLive ? 'live' : 'down'}"></span> <a href="http://localhost:11434" style="color:#e0e0e0">Ollama</a> <span style="color:#555">:11434</span></div>
-      <div class="agent-status"><span class="dot ${state.agents.langfuseLive ? 'live' : 'down'}"></span> <a href="http://localhost:3005" style="color:#e0e0e0">Langfuse</a> <span style="color:#555">:3005</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.litellmLive ? 'live' : 'down'}"></span> <a href="http://hearth.local:4000" style="color:#e0e0e0">LiteLLM Gateway</a> <span style="color:#555">:4000</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.ollamaLive ? 'live' : 'down'}"></span> <a href="http://hearth.local:11434" style="color:#e0e0e0">Ollama</a> <span style="color:#555">:11434</span></div>
+      <div class="agent-status"><span class="dot ${state.agents.langfuseLive ? 'live' : 'down'}"></span> <a href="http://hearth.local:3005" style="color:#e0e0e0">Langfuse</a> <span style="color:#555">:3005</span></div>
       <div class="agent-status"><span class="dot ${state.agents.protocolActive ? 'live' : 'off'}"></span> Agent Protocol</div>
       <div style="margin-top:8px;color:#555;font-size:11px">${state.agents.promptTotal} prompts · ${state.agents.promptSessions} sessions</div>
     </div>
@@ -1427,8 +1541,8 @@ ${renderNav('briefing')}
       <a href="/stream">Life Stream</a>
       <a href="/agents">Agents</a>
       <a href="/plan">Plan Tracker</a>
-      <a href="https://localhost:3001/health" target="_blank">API Health</a>
-      <a href="https://localhost:3002" target="_blank">Prompt Browser</a>
+      <a href="https://hearth.local:3001/health" target="_blank">API Health</a>
+      <a href="https://hearth.local:3002" target="_blank">Prompt Browser</a>
     </div>
   </div>
 
@@ -2531,6 +2645,42 @@ const server = https.createServer(sslOptions, (req, res) => {
     else { res.writeHead(404); res.end(); }
     return;
   }
+  // ─── Feedback API ────────────────────────────────────────────────────
+  const FEEDBACK_FILE = path.join(__dirname, 'data', 'feedback.json');
+  if (req.url === '/api/feedback' && req.method === 'GET') {
+    try {
+      const data = fs.existsSync(FEEDBACK_FILE) ? JSON.parse(fs.readFileSync(FEEDBACK_FILE, 'utf8')) : [];
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(data));
+    } catch (e) {
+      res.writeHead(200, { 'Content-Type': 'application/json' });
+      res.end('[]');
+    }
+    return;
+  }
+  if (req.url === '/api/feedback' && req.method === 'POST') {
+    let body = '';
+    req.on('data', c => body += c);
+    req.on('end', () => {
+      try {
+        const item = JSON.parse(body);
+        item.timestamp = new Date().toISOString();
+        item.page = item.page || '/';
+        const dir = path.join(__dirname, 'data');
+        if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
+        const data = fs.existsSync(FEEDBACK_FILE) ? JSON.parse(fs.readFileSync(FEEDBACK_FILE, 'utf8')) : [];
+        data.push(item);
+        fs.writeFileSync(FEEDBACK_FILE, JSON.stringify(data, null, 2));
+        res.writeHead(200, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ ok: true, count: data.length }));
+      } catch (e) {
+        res.writeHead(400, { 'Content-Type': 'application/json' });
+        res.end(JSON.stringify({ error: e.message }));
+      }
+    });
+    return;
+  }
+
   if (req.url === '/api/state') {
     const state = getState();
     recordHistory(state);
@@ -2633,15 +2783,10 @@ const server = https.createServer(sslOptions, (req, res) => {
     res.end(JSON.stringify(agentData, null, 2));
     return;
   }
-  if (req.url === '/deps') {
-    res.writeHead(200, { 'Content-Type': 'text/html' });
-    res.end(renderDepsHTML());
-    return;
-  }
-  if (req.url === '/api/deps') {
-    const deps = getDependencies();
-    res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
-    res.end(JSON.stringify(deps, null, 2));
+  if (req.url === '/deps' || req.url === '/api/deps') {
+    // Decommissioned 2026-03-05 — data now lives in TASKS.md, served via /blockers
+    res.writeHead(301, { 'Location': req.url === '/api/deps' ? '/api/blockers' : '/blockers' });
+    res.end();
     return;
   }
   if (req.url === '/api/history') {
@@ -2664,6 +2809,21 @@ const server = https.createServer(sslOptions, (req, res) => {
   if (req.url === '/fleet') {
     res.writeHead(200, { 'Content-Type': 'text/html' });
     res.end(renderFleetHTML());
+    return;
+  }
+  if (req.url === '/devices') {
+    res.writeHead(200, { 'Content-Type': 'text/html' });
+    res.end(renderDevicesHTML());
+    return;
+  }
+  if (req.url === '/api/devices') {
+    getDevicesData().then(data => {
+      res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+      res.end(JSON.stringify(data, null, 2));
+    }).catch(e => {
+      res.writeHead(500, { 'Content-Type': 'application/json' });
+      res.end(JSON.stringify({ error: e.message }));
+    });
     return;
   }
   if (req.url === '/usage') {
@@ -3075,7 +3235,7 @@ ${renderNav('fleet')}
 async function loadFleet() {
   const el = document.getElementById('fleet-content');
   try {
-    const res = await fetch('https://localhost:3001/api/fleet');
+    const res = await fetch('https://hearth.local:3001/api/fleet');
     const d = await res.json();
     el.innerHTML = renderFleet(d);
   } catch (e) {
@@ -3702,7 +3862,7 @@ function renderEndpointsHTML() {
         { method: 'GET', path: '/threads', desc: 'Active threads from MEMORY.md' },
         { method: 'GET', path: '/philological', desc: 'Philological pipeline - source restoration + literary translation' },
         { method: 'GET', path: '/plan', desc: 'Plan execution tracker' },
-        { method: 'GET', path: '/deps', desc: 'Dependency graph (blockers)' },
+        { method: 'GET', path: '/deps', desc: 'Redirects to /blockers (decommissioned 2026-03-05)' },
         { method: 'GET', path: '/endpoints', desc: 'This page - all endpoints index' },
         { method: 'GET', path: '/api/state', desc: 'JSON: System state snapshot' },
         { method: 'GET', path: '/api/briefing', desc: 'JSON: Daily briefing Eisenhower matrix' },
@@ -3711,7 +3871,7 @@ function renderEndpointsHTML() {
         { method: 'GET', path: '/api/agents', desc: 'JSON: Agent collaboration data' },
         { method: 'GET', path: '/api/philological', desc: 'JSON: Philological pipeline data' },
         { method: 'GET', path: '/api/plan', desc: 'JSON: Plan execution state' },
-        { method: 'GET', path: '/api/deps', desc: 'JSON: Dependencies and blockers' },
+        { method: 'GET', path: '/api/deps', desc: 'Redirects to /api/blockers (decommissioned 2026-03-05)' },
         { method: 'GET', path: '/api/history', desc: 'JSON: Historical metrics' },
       ],
     },
@@ -3774,7 +3934,7 @@ function renderEndpointsHTML() {
     const endpointRows = svc.endpoints.map(e => `
       <tr>
         <td><span class="method ${e.method.toLowerCase()}">${e.method}</span></td>
-        <td><code class="path">localhost:${svc.port}${e.path}</code></td>
+        <td><code class="path">hearth.local:${svc.port}${e.path}</code></td>
         <td class="desc">${e.desc}</td>
       </tr>
     `).join('');
@@ -3934,7 +4094,7 @@ h1 {
   ${renderNav('endpoints')}
 
   <h1>API Endpoints</h1>
-  <div class="subtitle">Complete catalog of all localhost services and their endpoints</div>
+  <div class="subtitle">Complete catalog of all hearth.local services and their endpoints</div>
 
   <div class="stats">
     <div class="stat">
@@ -4278,9 +4438,9 @@ ${PLOS_FOOTER_HTML}</body></html>`;
 server.listen(PORT, () => {
   console.log(`\n  Ω₀ PracticeLife Dashboard`);
   console.log(`  ========================`);
-  console.log(`  https://localhost:${PORT}`);
-  console.log(`  API: https://localhost:${PORT}/api/state`);
-  console.log(`  History: https://localhost:${PORT}/api/history\n`);
+  console.log(`  https://hearth.local:${PORT}`);
+  console.log(`  API: https://hearth.local:${PORT}/api/state`);
+  console.log(`  History: https://hearth.local:${PORT}/api/history\n`);
 });
 
 // ─── Dependencies page ───────────────────────────────────────────────
@@ -5502,7 +5662,7 @@ function handleDownloadsBrowse(dirPath, res) {
 // Fetches from API :3001 /api/q/* endpoints, renders multi-owner task board
 
 function renderQueueHTML() {
-  const API = 'https://localhost:3001/api/q';
+  const API = 'https://hearth.local:3001/api/q';
   return `<!DOCTYPE html><html><head>
 <meta charset="utf-8">
 <link rel="icon" type="image/svg+xml" href="/favicon.svg"><title>PL.OS - Queue</title>
@@ -5624,11 +5784,11 @@ ${renderNav('queue')}
   <div id="thread-content"></div>
 </div>
 
-<div class="footer">Task Queue · API at <a href="https://localhost:3001/api/q/stats">:3001/api/q</a> · Auto-refreshes every 15s</div>
+<div class="footer">Task Queue · API at <a href="https://hearth.local:3001/api/q/stats">:3001/api/q</a> · Auto-refreshes every 15s</div>
 </div>
 
 <script>
-const API = 'https://localhost:3001/api/q';
+const API = 'https://hearth.local:3001/api/q';
 let currentOwner = null;
 let allTasks = [];
 
@@ -6792,4 +6952,306 @@ setInterval(async () => {
 ${PLOS_FOOTER_HTML}</body></html>`;
 }
 
+// ─── Device Inventory ─────────────────────────────────────────────────────
+
+async function getDevicesData() {
+  const apiKey = run('grep UNIFI_LOCAL_API_KEY ~/.config/ai-keys.env | cut -d\'"\' -f2', 3000);
+
+  // Static inventory — closet + infrastructure
+  const staticDevices = [
+    { name: 'Hearth', type: 'compute', model: 'Mac Studio M2 Max', ip: '192.168.1.113', location: 'Office', role: 'Primary workstation', specs: '64GB RAM, 2TB, 30 GPU cores', connection: 'Ethernet', status: 'up' },
+    { name: 'Anvil', type: 'compute', model: 'Mac Studio M3 Ultra', ip: '192.168.1.105', location: 'Office', role: 'AI workhorse', specs: '96GB RAM, 4TB, 60 GPU cores', connection: 'Ethernet', status: 'up' },
+    { name: 'DreamMachine', type: 'network', model: 'UDM', ip: '192.168.1.1', location: 'Server Closet', role: 'Gateway/Router', specs: '2GB RAM, IPS/Ad-block/Honeypot', connection: 'Ethernet', status: 'up' },
+    { name: 'NAS (DS223j)', type: 'storage', model: 'Synology DS223j', ip: '192.168.1.57', location: 'Server Closet', role: 'Storage + Web hosting', specs: '1GB RAM, 16TB, ARM64', connection: 'Ethernet', status: 'up' },
+    { name: 'Deep', type: 'storage', model: 'LaCie d2 6TB', ip: null, location: 'Server Closet', role: 'Deep archive (NAS USB)', specs: 'ext4, 5.5TB free, S/N NL100303', connection: 'USB', status: 'up' },
+    { name: 'YellowSubmarine', type: 'storage', model: 'WD My Passport 4TB', ip: null, location: 'Server Closet', role: 'Archive (NAS USB)', specs: 'ext4, 3.6TB free, S/N WX8SD0VX0ZE', connection: 'USB', status: 'up' },
+    { name: 'SD4Loco', type: 'storage', model: 'External SSD 4TB', ip: null, location: 'Office (Hearth)', role: 'Warm tier storage', specs: 'APFS, 476GB free', connection: 'USB-C', status: 'up' },
+    { name: 'HP Color LaserJet', type: 'peripheral', model: 'M255dw', ip: '192.168.1.15', location: 'Office', role: 'Printer', specs: 'IPP/AirPrint, duplex', connection: 'WiFi', status: 'up' },
+    { name: 'ATT ONT', type: 'network', model: 'Optical Network Terminal', ip: null, location: 'Server Closet', role: 'Fiber-to-copper', specs: 'UPS-backed', connection: 'Fiber', status: 'up' },
+    { name: 'ATT Gateway', type: 'network', model: 'ARRIS BGW210-700', ip: null, location: 'Server Closet', role: 'Bridge mode (passthrough)', specs: 'S/N R91NH8RV301381, MAC F0:AF:85:FF:64:11', connection: 'Ethernet', status: 'up' },
+    { name: 'CyberPower UPS', type: 'infrastructure', model: 'CP900AVR', ip: null, location: 'Server Closet', role: 'Battery backup', specs: '900VA stepped sine wave, S/N BHSNX7000246', connection: 'Power', status: 'up' },
+    { name: 'PT-P300BT', type: 'peripheral', model: 'Brother P-Touch Cube', ip: null, location: 'Office', role: 'Label printer', specs: 'Bluetooth, 12mm tape', connection: 'Bluetooth', status: 'up' },
+    { name: 'Foscam Camera', type: 'security', model: 'Unknown', ip: null, location: 'Server Closet', role: 'IP Camera (offline)', specs: 'Needs physical reset', connection: 'Ethernet', status: 'down' },
+    { name: 'iPhone Pro Max 17', type: 'mobile', model: 'iPhone Pro Max 17', ip: null, location: 'Mobile', role: 'Primary phone', specs: 'iPadOS 26.3 beta', connection: 'WiFi', status: 'up' },
+    { name: 'IPPad (iPad Pro 13")', type: 'mobile', model: 'iPad Pro M4 13"', ip: null, location: 'Mobile', role: 'Tablet', specs: 'iPadOS 26.3 beta', connection: 'WiFi', status: 'up' },
+    { name: 'Apple Watch', type: 'wearable', model: 'Apple Watch', ip: null, location: 'Wrist', role: 'Voice Memos, Health', specs: 'watchOS 26.4', connection: 'Bluetooth/WiFi', status: 'up' },
+    { name: 'MBP M5 Max', type: 'compute', model: 'MacBook Pro 16" M5 Max', ip: null, location: 'INCOMING', role: 'Primary mobile compute', specs: '128GB RAM, 4TB, 3x TB5', connection: 'WiFi/TB5', status: 'incoming' },
+  ];
+
+  // WiFi APs
+  const aps = [
+    { name: 'U7 Outdoor', type: 'network', model: 'U7-Outdoor', ip: null, location: 'Outdoor', role: 'WiFi AP', specs: '2.4/5/6 GHz', connection: 'Ethernet', status: 'up' },
+    { name: 'AC Pro Weslandia', type: 'network', model: 'UAP-AC-Pro', ip: null, location: 'Weslandia', role: 'WiFi AP', specs: '2.4/5 GHz', connection: 'Ethernet', status: 'up' },
+    { name: 'U6+ Main', type: 'network', model: 'U6+', ip: null, location: 'Main Floor', role: 'WiFi AP', specs: '2.4/5/6 GHz', connection: 'Ethernet', status: 'up' },
+    { name: 'AC Pro Upstairs', type: 'network', model: 'UAP-AC-Pro', ip: null, location: 'Upstairs', role: 'WiFi AP', specs: '2.4/5 GHz', connection: 'Ethernet', status: 'up' },
+  ];
+
+  // Spare gear
+  const spareGear = [
+    { name: 'UniFi AP AC Pro (spare)', model: 'UAP-AC-Pro', recommendation: 'REUSE: Deploy for outdoor coverage' },
+    { name: 'UniFi Cloud Key', model: 'UC-CK', recommendation: 'SELL/GIFT: DM handles controller' },
+    { name: 'UniFi Security Gateway', model: 'USG', recommendation: 'SELL/GIFT: Superseded by DM' },
+    { name: 'EdgeRouter X', model: 'ER-X', recommendation: 'REUSE: Managed switch or OpenWrt' },
+    { name: 'NETGEAR Switch', model: 'ProSAFE 5/8-port', recommendation: 'REUSE: Extra wired ports' },
+    { name: 'Giros Mount Bracket', model: 'Camera/AP mount', recommendation: 'REUSE: Perimeter cameras' },
+    { name: 'Apple AirPort Extreme', model: '802.11ac tower', recommendation: 'SELL/GIFT: UniFi mesh is superior' },
+  ];
+
+  // IoT devices
+  const iot = [
+    { name: 'Nest Protect x3', type: 'iot', role: 'Smoke/CO detectors', connection: 'WiFi' },
+    { name: 'Ecobee 4 x3', type: 'iot', role: 'Thermostats', connection: 'WiFi' },
+    { name: 'Tesla Model Y x2', type: 'iot', role: 'Vehicles', connection: 'WiFi' },
+    { name: 'SolaX Solar Inverter', type: 'iot', role: 'Solar power', connection: 'WiFi' },
+    { name: 'Apple TV 4K', type: 'iot', role: 'Media', connection: 'WiFi/Ethernet' },
+    { name: 'Sonos Speakers', type: 'iot', role: 'Kitchen/Dining/Grand Theater', connection: 'WiFi' },
+    { name: 'MacBook Air', type: 'compute', role: 'Secondary laptop', connection: 'WiFi' },
+  ];
+
+  // Try to get live DM clients
+  let liveClients = [];
+  let dmStatus = 'unknown';
+  if (apiKey && apiKey !== '—') {
+    try {
+      const result = run(`curl -sk "https://192.168.1.1/proxy/network/api/s/default/stat/sta" -H "X-API-Key: ${apiKey}" --max-time 5`, 8000);
+      if (result && result !== '—') {
+        const parsed = JSON.parse(result);
+        liveClients = (parsed.data || []).map(c => ({
+          name: c.name || c.hostname || c.oui || '?',
+          mac: c.mac,
+          ip: c.ip,
+          network: c.network || 'default',
+          uptime: c.uptime ? Math.round(c.uptime / 3600) + 'h' : '?',
+          rxBytes: c.rx_bytes,
+          txBytes: c.tx_bytes,
+          signal: c.signal || null,
+          isWired: c.is_wired || false,
+        }));
+        dmStatus = 'connected';
+      }
+    } catch(e) {
+      dmStatus = 'error: ' + e.message;
+    }
+  }
+
+  return {
+    timestamp: new Date().toISOString(),
+    dmStatus,
+    inventory: staticDevices,
+    accessPoints: aps,
+    iotDevices: iot,
+    spareGear,
+    liveClients,
+    totals: {
+      inventory: staticDevices.length,
+      aps: aps.length,
+      iot: iot.length,
+      spare: spareGear.length,
+      liveOnNetwork: liveClients.length,
+    }
+  };
+}
+
+function renderDevicesHTML() {
+  return `<!DOCTYPE html>
+<html><head>
+<meta charset="utf-8">
+<link rel="icon" type="image/svg+xml" href="/favicon.svg">
+<title>PL.OS - Devices</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  body { background: #0a0a0a; color: #e0e0e0; font-family: 'SF Mono', 'Fira Code', monospace; padding: 20px; }
+  h1 { color: #ffaa00; font-size: 24px; margin-bottom: 4px; }
+  .subtitle { color: #666; font-size: 12px; margin-bottom: 20px; }
+  h2 { color: #ffaa00; font-size: 16px; margin: 24px 0 12px; border-bottom: 1px solid #222; padding-bottom: 8px; }
+  .stats { display: flex; gap: 16px; margin-bottom: 20px; flex-wrap: wrap; }
+  .stat-card { background: #151515; border: 1px solid #222; border-radius: 8px; padding: 12px 16px; min-width: 100px; }
+  .stat-num { font-size: 24px; color: #ffaa00; font-weight: bold; }
+  .stat-label { font-size: 11px; color: #666; }
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(320px, 1fr)); gap: 12px; margin-bottom: 24px; }
+  .device { background: #151515; border: 1px solid #222; border-radius: 10px; padding: 14px; position: relative; }
+  .device.compute { border-left: 3px solid #ffaa00; }
+  .device.network { border-left: 3px solid #00aaff; }
+  .device.storage { border-left: 3px solid #22c55e; }
+  .device.peripheral { border-left: 3px solid #aa55ff; }
+  .device.mobile { border-left: 3px solid #ff55aa; }
+  .device.wearable { border-left: 3px solid #ff55aa; }
+  .device.infrastructure { border-left: 3px solid #888; }
+  .device.security { border-left: 3px solid #ff4444; }
+  .device.iot { border-left: 3px solid #55aaff; }
+  .device .name { font-size: 14px; font-weight: bold; display: flex; align-items: center; gap: 8px; }
+  .device .model { color: #888; font-size: 11px; margin: 2px 0; }
+  .device .meta { color: #555; font-size: 11px; margin-top: 6px; line-height: 1.6; }
+  .device .meta span { display: inline-block; margin-right: 12px; }
+  .device .meta .label { color: #888; }
+  .dot { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex-shrink: 0; }
+  .dot.up { background: #22c55e; box-shadow: 0 0 6px #22c55e; }
+  .dot.down { background: #ff4444; box-shadow: 0 0 6px #ff4444; }
+  .dot.incoming { background: #ffaa00; box-shadow: 0 0 6px #ffaa00; animation: pulse 2s infinite; }
+  @keyframes pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.4; } }
+  .type-badge { font-size: 10px; padding: 2px 6px; border-radius: 3px; background: #222; color: #888; text-transform: uppercase; letter-spacing: 0.5px; }
+  .spare-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .spare-table th { text-align: left; color: #888; font-weight: normal; padding: 6px 10px; border-bottom: 1px solid #222; }
+  .spare-table td { padding: 6px 10px; border-bottom: 1px solid #111; }
+  .spare-table .rec { color: #ffaa00; font-size: 11px; }
+  .client-table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  .client-table th { text-align: left; color: #888; font-weight: normal; padding: 4px 8px; border-bottom: 1px solid #222; font-size: 11px; }
+  .client-table td { padding: 4px 8px; border-bottom: 1px solid #111; }
+  .client-table tr:hover { background: #1a1a1a; }
+  .wired { color: #22c55e; }
+  .wifi { color: #00aaff; }
+  .loading { color: #555; font-style: italic; }
+  .error { color: #ff4444; }
+  .filter-bar { display: flex; gap: 8px; margin-bottom: 16px; flex-wrap: wrap; }
+  .filter-btn { font-size: 11px; padding: 4px 10px; border-radius: 4px; border: 1px solid #333; background: #151515; color: #888; cursor: pointer; font-family: inherit; }
+  .filter-btn.active { border-color: #ffaa00; color: #ffaa00; background: #1a1500; }
+  .filter-btn:hover { border-color: #555; }
+  .refresh { position: fixed; bottom: 20px; right: 20px; background: #151515; border: 1px solid #333; color: #ffaa00; padding: 8px 16px; border-radius: 8px; cursor: pointer; font-family: inherit; font-size: 12px; }
+  .refresh:hover { border-color: #ffaa00; }
+  .search { background: #111; border: 1px solid #333; color: #e0e0e0; padding: 6px 12px; border-radius: 6px; font-family: inherit; font-size: 12px; width: 200px; }
+  .search:focus { outline: none; border-color: #ffaa00; }
+</style>
+</head><body>
+${renderNav('devices')}
+<h1>Device Inventory</h1>
+<p class="subtitle">All devices across Treehouse — live probe + static registry</p>
+
+<div id="devices-content"><p class="loading">Loading device inventory...</p></div>
+
+<button class="refresh" onclick="loadDevices()">Refresh</button>
+
+<script>
+let devicesData = null;
+let activeFilter = 'all';
+
+async function loadDevices() {
+  const el = document.getElementById('devices-content');
+  try {
+    const res = await fetch('/api/devices');
+    devicesData = await res.json();
+    renderAll();
+  } catch(e) {
+    el.innerHTML = '<p class="error">Failed to load devices: ' + e.message + '</p>';
+  }
+}
+
+function renderAll() {
+  const d = devicesData;
+  if (!d) return;
+  const el = document.getElementById('devices-content');
+  let html = '';
+
+  // Stats
+  html += '<div class="stats">';
+  html += '<div class="stat-card"><div class="stat-num">' + d.totals.inventory + '</div><div class="stat-label">Registered</div></div>';
+  html += '<div class="stat-card"><div class="stat-num">' + d.totals.aps + '</div><div class="stat-label">WiFi APs</div></div>';
+  html += '<div class="stat-card"><div class="stat-num">' + d.totals.iot + '</div><div class="stat-label">IoT</div></div>';
+  html += '<div class="stat-card"><div class="stat-num">' + d.totals.liveOnNetwork + '</div><div class="stat-label">Live Clients</div></div>';
+  html += '<div class="stat-card"><div class="stat-num">' + d.totals.spare + '</div><div class="stat-label">Spare Gear</div></div>';
+  html += '</div>';
+
+  // Filter bar
+  const types = ['all', 'compute', 'network', 'storage', 'peripheral', 'mobile', 'infrastructure', 'security'];
+  html += '<div class="filter-bar">';
+  html += '<input class="search" placeholder="Search devices..." oninput="filterSearch(this.value)" />';
+  types.forEach(t => {
+    html += '<button class="filter-btn' + (activeFilter === t ? ' active' : '') + '" onclick="setFilter(\\'' + t + '\\')">' + t + '</button>';
+  });
+  html += '</div>';
+
+  // Inventory grid
+  html += '<h2>Registered Devices</h2>';
+  html += '<div class="grid" id="inv-grid">';
+  const allDevices = [...d.inventory, ...d.accessPoints];
+  allDevices.forEach(dev => {
+    html += renderDeviceCard(dev);
+  });
+  html += '</div>';
+
+  // IoT
+  html += '<h2>IoT Devices</h2>';
+  html += '<div class="grid">';
+  d.iotDevices.forEach(dev => {
+    html += '<div class="device iot"><div class="name"><span class="dot up"></span>' + dev.name + ' <span class="type-badge">iot</span></div>';
+    html += '<div class="meta"><span><span class="label">Role:</span> ' + dev.role + '</span><span><span class="label">Conn:</span> ' + dev.connection + '</span></div></div>';
+  });
+  html += '</div>';
+
+  // Live clients from DM
+  if (d.liveClients.length > 0) {
+    html += '<h2>Live Network Clients (' + d.liveClients.length + ') <span style="font-size:11px;color:#666;font-weight:normal">via DM API</span></h2>';
+    const sorted = [...d.liveClients].sort((a, b) => (a.ip || 'z').localeCompare(b.ip || 'z', undefined, {numeric: true}));
+    html += '<table class="client-table"><tr><th>Name</th><th>IP</th><th>MAC</th><th>Type</th><th>Uptime</th></tr>';
+    sorted.forEach(c => {
+      const typeClass = c.isWired ? 'wired' : 'wifi';
+      const typeLabel = c.isWired ? 'Wired' : 'WiFi';
+      html += '<tr><td>' + c.name + '</td><td>' + (c.ip || '—') + '</td><td style="color:#555">' + (c.mac || '—') + '</td>';
+      html += '<td class="' + typeClass + '">' + typeLabel + '</td><td>' + (c.uptime || '—') + '</td></tr>';
+    });
+    html += '</table>';
+  } else {
+    html += '<h2>Live Network Clients</h2>';
+    html += '<p style="color:#555;font-size:12px">DM API status: ' + d.dmStatus + '</p>';
+  }
+
+  // Spare gear
+  html += '<h2>Spare Gear Shelf (' + d.spareGear.length + ')</h2>';
+  html += '<table class="spare-table"><tr><th>Device</th><th>Model</th><th>Recommendation</th></tr>';
+  d.spareGear.forEach(s => {
+    html += '<tr><td>' + s.name + '</td><td style="color:#555">' + s.model + '</td><td class="rec">' + s.recommendation + '</td></tr>';
+  });
+  html += '</table>';
+
+  // Timestamp
+  html += '<p style="color:#333;font-size:11px;margin-top:24px">Probed ' + new Date(d.timestamp).toLocaleString() + '</p>';
+
+  el.innerHTML = html;
+}
+
+function renderDeviceCard(dev) {
+  const dotClass = dev.status === 'incoming' ? 'incoming' : (dev.status === 'down' ? 'down' : 'up');
+  let html = '<div class="device ' + (dev.type || '') + '" data-type="' + (dev.type || '') + '" data-name="' + (dev.name || '').toLowerCase() + '">';
+  html += '<div class="name"><span class="dot ' + dotClass + '"></span>' + dev.name;
+  html += ' <span class="type-badge">' + (dev.type || '?') + '</span></div>';
+  html += '<div class="model">' + (dev.model || '') + '</div>';
+  html += '<div class="meta">';
+  if (dev.ip) html += '<span><span class="label">IP:</span> ' + dev.ip + '</span>';
+  if (dev.location) html += '<span><span class="label">Loc:</span> ' + dev.location + '</span>';
+  if (dev.connection) html += '<span><span class="label">Conn:</span> ' + dev.connection + '</span>';
+  html += '</div>';
+  if (dev.specs) html += '<div class="meta"><span class="label">Specs:</span> ' + dev.specs + '</div>';
+  if (dev.role) html += '<div class="meta" style="color:#888"><span class="label">Role:</span> ' + dev.role + '</div>';
+  html += '</div>';
+  return html;
+}
+
+function setFilter(type) {
+  activeFilter = type;
+  document.querySelectorAll('.filter-btn').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  document.querySelectorAll('#inv-grid .device').forEach(card => {
+    if (type === 'all' || card.dataset.type === type) {
+      card.style.display = '';
+    } else {
+      card.style.display = 'none';
+    }
+  });
+}
+
+function filterSearch(q) {
+  q = q.toLowerCase();
+  document.querySelectorAll('#inv-grid .device').forEach(card => {
+    if (!q || card.textContent.toLowerCase().includes(q)) {
+      card.style.display = '';
+    } else {
+      card.style.display = 'none';
+    }
+  });
+}
+
+loadDevices();
+setInterval(loadDevices, 60000);
+</script>
+${PLOS_FOOTER_HTML}</body></html>`;
+}
 
