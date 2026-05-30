@@ -802,11 +802,11 @@ ${renderNav('dashboard')}
     <p style="font-size:13px; color:#666;">These numbers are NOT bills. They show what it WOULD cost if paying per-token, useful for tracking cache efficiency.</p>
   </div>
   <table style="width:100%; font-size:13px; color:#888;">
-    <tr><td><strong style="color:#ccc;">Theoretical Cost (if paying per-token):</strong></td><td style="text-align:right; color:#888;">\$${state.wallet.cost ? state.wallet.cost.total.toFixed(2) : '0.00'}</td></tr>
-    <tr><td style="padding-left:16px;">Input tokens</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.input.toFixed(2) : '0.00'}</td></tr>
-    <tr><td style="padding-left:16px;">Output tokens</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.output.toFixed(2) : '0.00'}</td></tr>
-    <tr><td style="padding-left:16px;">Cache create</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.cache_create.toFixed(2) : '0.00'}</td></tr>
-    <tr><td style="padding-left:16px;">Cache read</td><td style="text-align:right;">\$${state.wallet.cost ? state.wallet.cost.cache_read.toFixed(2) : '0.00'}</td></tr>
+    <tr><td><strong style="color:#ccc;">Theoretical Cost (if paying per-token):</strong></td><td style="text-align:right; color:#888;">\$${state.wallet.cost?.total?.toFixed(2) ?? '0.00'}</td></tr>
+    <tr><td style="padding-left:16px;">Input tokens</td><td style="text-align:right;">\$${state.wallet.cost?.input?.toFixed(2) ?? '0.00'}</td></tr>
+    <tr><td style="padding-left:16px;">Output tokens</td><td style="text-align:right;">\$${state.wallet.cost?.output?.toFixed(2) ?? '0.00'}</td></tr>
+    <tr><td style="padding-left:16px;">Cache create</td><td style="text-align:right;">\$${state.wallet.cost?.cache_create?.toFixed(2) ?? '0.00'}</td></tr>
+    <tr><td style="padding-left:16px;">Cache read</td><td style="text-align:right;">\$${state.wallet.cost?.cache_read?.toFixed(2) ?? '0.00'}</td></tr>
     <tr style="border-top:1px solid #333;"><td><strong style="color:#ffaa00;">Cache Efficiency Gain:</strong></td><td style="text-align:right; color:#ffaa00;"><strong>\$${state.wallet.saved_by_cache ? state.wallet.saved_by_cache.toFixed(2) : '0.00'}</strong></td></tr>
     <tr><td colspan="2" style="font-size:12px; color:#666; padding-top:8px;">Without caching: \$${state.wallet.cost && state.wallet.saved_by_cache ? (state.wallet.cost.total + state.wallet.saved_by_cache).toFixed(2) : '0.00'} · <strong style="color:#ffaa00;">${state.wallet.cost && state.wallet.saved_by_cache ? ((state.wallet.saved_by_cache / (state.wallet.cost.total + state.wallet.saved_by_cache)) * 100).toFixed(1) : '0'}% efficient</strong></td></tr>
   </table>
