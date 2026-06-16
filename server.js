@@ -27,6 +27,69 @@ function run(cmd, timeout = 5000, cached = true) {
   } catch { return '—'; }
 }
 
+// ─── Living CI: Invariants that validate system health on every heartbeat ────
+const INVARIANTS = [
+  { name: 'disk_not_full', check: (s) => {
+    const pct = parseInt(s.system?.diskUsage) || 0;
+    return { pass: pct < 90, reason: pct >= 90 ? `Disk ${pct}% full` : null };
+  }},
+  { name: 'memory_safe', check: (s) => {
+    const alarm = s.system?.memory?.alarm;
+    return { pass: !alarm, reason: s.system?.memory?.alarm_reason };
+  }},
+  { name: 'api_live', check: (s) => ({ pass: s.agents?.apiLive, reason: 'API health check failed' }) },
+  { name: 'ollama_live', check: (s) => ({ pass: s.agents?.ollamaLive, reason: 'Ollama not responding' }) },
+  { name: 'litellm_live', check: (s) => ({ pass: s.agents?.litellmLive, reason: 'LiteLLM proxy down' }) },
+  { name: 'vault_accessible', check: (s) => {
+    const notes = parseInt(s.vault?.total_notes) || 0;
+    return { pass: notes > 0, reason: notes === 0 ? 'Vault inaccessible or empty' : null };
+  }},
+  { name: 'downloads_manageable', check: (s) => {
+    const loose = parseInt(s.downloads?.loose_files) || 0;
+    return { pass: loose < 100, reason: loose >= 100 ? `${loose} loose files in Downloads` : null };
+  }},
+];
+
+function checkInvariants(state) {
+  const results = [];
+  let passing = 0, failing = 0;
+  for (const inv of INVARIANTS) {
+    try {
+      const result = inv.check(state);
+      results.push({ name: inv.name, ...result });
+      if (result.pass) passing++; else failing++;
+    } catch (e) {
+      results.push({ name: inv.name, pass: false, reason: `Check error: ${e.message}` });
+      failing++;
+    }
+  }
+  return { results, passing, failing, total: INVARIANTS.length, healthy: failing === 0 };
+}
+
+function getHeartbeat() {
+  const state = getState();
+  const invariants = checkInvariants(state);
+  const hostname = run('hostname', 1000) || 'unknown';
+  return {
+    node: hostname,
+    timestamp: new Date().toISOString(),
+    healthy: invariants.healthy,
+    invariants,
+    summary: {
+      disk: state.system?.diskUsage,
+      memory: state.system?.memory,
+      services: {
+        api: state.agents?.apiLive,
+        ollama: state.agents?.ollamaLive,
+        litellm: state.agents?.litellmLive,
+        langfuse: state.agents?.langfuseLive,
+      },
+      vault_notes: state.vault?.total_notes,
+      active_workers: state.agents?.workers?.length || 0,
+    },
+  };
+}
+
 function getState() {
   const volumes = run('ls /Volumes/');
   const diskUsage = run("df -h / | tail -1 | awk '{print $5}'");
@@ -2686,6 +2749,12 @@ const server = https.createServer(sslOptions, (req, res) => {
     recordHistory(state);
     res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
     res.end(JSON.stringify(state, null, 2));
+    return;
+  }
+  if (req.url === '/api/heartbeat') {
+    const heartbeat = getHeartbeat();
+    res.writeHead(heartbeat.healthy ? 200 : 503, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' });
+    res.end(JSON.stringify(heartbeat, null, 2));
     return;
   }
   if (req.url === '/command') {
