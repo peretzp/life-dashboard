@@ -19,6 +19,10 @@ const { spawn } = require('child_process');
 
 const SLACK_API = 'https://slack.com/api';
 
+// Load a local .env into process.env if present (Node 22 built-in — no
+// dependency). A missing file is fine; real environment vars still work.
+try { process.loadEnvFile('.env'); } catch { /* no .env — use process.env as-is */ }
+
 // ---- config -----------------------------------------------------------
 const APP_TOKEN = process.env.SLACK_APP_TOKEN || '';   // xapp-... (Socket Mode)
 const BOT_TOKEN = process.env.SLACK_BOT_TOKEN || '';   // xoxb-... (Web API)
@@ -94,7 +98,11 @@ function runHandler(prompt) {
       const body = out.trim() || err.trim() || `(no output, exit ${code})`;
       resolve(body.length > 3500 ? body.slice(0, 3500) + '\n…(truncated)' : body);
     });
-    if (HANDLER_STDIN) { child.stdin.write(prompt); child.stdin.end(); }
+    if (HANDLER_STDIN) {
+      child.stdin.on('error', () => {});   // handler may exit before reading — ignore EPIPE
+      child.stdin.write(prompt);
+      child.stdin.end();
+    }
   });
 }
 
@@ -105,8 +113,10 @@ function stripMention(text) {
 
 async function handleEvent(ev) {
   if (!ev) return;
-  // ignore bots / our own messages to avoid loops
-  if (ev.bot_id || ev.subtype === 'bot_message') return;
+  // ignore bots, our own messages, and message edits/deletes/joins to avoid
+  // loops and spurious re-runs (message_changed/message_deleted carry a subtype)
+  if (ev.bot_id) return;
+  if (ev.type === 'message' && ev.subtype) return;
   if (BOT_USER_ID && ev.user === BOT_USER_ID) return;
 
   const isMention = ev.type === 'app_mention';
@@ -216,12 +226,14 @@ async function main() {
   await connect();
 }
 
-process.on('SIGINT', async () => {
-  log('shutting down');
+async function shutdown(signal) {
+  log(`shutting down (${signal})`);
   if (PRESENCE_CHANNEL) {
     try { await post(PRESENCE_CHANNEL, `⚪️ *${NODE_NAME}* going offline.`); } catch {}
   }
   process.exit(0);
-});
+}
+process.on('SIGINT', () => shutdown('SIGINT'));
+process.on('SIGTERM', () => shutdown('SIGTERM'));
 
 main().catch(e => { console.error('[bridge] fatal:', e); process.exit(1); });

@@ -36,8 +36,13 @@ your router.
 ```
 
 Replies are prefixed with the node name (`*bork-oak* ▸ …`) so you can see
-*which* machine answered — one Slack app is enough. (Want distinct avatars per
-node? Create two Slack apps from `manifest.yaml`, one per node.)
+*which* machine answered — one Slack app is enough to get started. Note that
+with a single shared app, Slack delivers each event to only **one** connected
+node (load-balanced), so exactly one node answers — but you can't control which,
+and per-node `FLEET_ALLOW_CHANNELS` filters can silently drop an event that
+lands on the wrong node. For deterministic per-node channel routing (and
+distinct avatars), give each node its **own** Slack app — create one per node
+from `manifest.yaml`.
 
 ## Setup (once)
 
@@ -82,9 +87,11 @@ The bridge only helps if the humans' Slack is set up to match. Suggested:
 - **Presence channel:** point `FLEET_PRESENCE_CHANNEL` at a low-traffic
   `#fleet` channel so nodes announce online/offline — that's how you *see* the
   fleet come alive instead of guessing.
-- **Address a specific node** by pinging in a thread and reading the `*node* ▸`
-  prefix; if both OAK and FRAM run the same app, both may answer — use
-  `FLEET_ALLOW_CHANNELS` to keep a node scoped to certain channels.
+- **Address a specific node.** With one shared app, Slack routes each mention to
+  a single node (you can't pick which), so read the `*node* ▸` prefix to see who
+  answered. To pin channels to specific nodes deterministically, run a separate
+  Slack app per node (see Topology) — `FLEET_ALLOW_CHANNELS` alone can't do it
+  under a shared app, since a filtered-out event may be the one Slack delivered.
 - **Durable context lives in the repo, not Slack.** Anything every future
   session should know (fleet topology, naming, product vision) belongs in
   committed files so it loads automatically.
@@ -98,6 +105,7 @@ The bridge only helps if the humans' Slack is set up to match. Suggested:
   never interpolated into a shell string, so message text can't inject shell
   commands. Still, `FLEET_HANDLER_CMD` runs with the node user's privileges —
   point it at a sandboxed model runner, and use `FLEET_ALLOW_CHANNELS` to limit
-  where it listens.
+  where it listens (under a per-node Slack app; see Topology for why a shared app
+  makes channel filtering unreliable).
 - The bridge ignores messages from bots and from itself, and de-dupes Slack
   redeliveries, to avoid loops.
