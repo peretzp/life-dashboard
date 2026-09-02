@@ -1,0 +1,32 @@
+# Slack app manifest for the Fleet Bridge.
+# Create the app at https://api.slack.com/apps → "From an app manifest",
+# paste this, then install to the par-10-sky workspace. Generate an
+# app-level token (Basic Information → App-Level Tokens) with the
+# connections:write scope for Socket Mode.
+display_information:
+  name: Bork'a Fleet Bridge
+  description: Bridges the workspace to the local OAK/FRAM fleet over Socket Mode.
+  background_color: "#1a1a1a"
+features:
+  bot_user:
+    display_name: borka
+    always_online: true
+oauth_config:
+  scopes:
+    bot:
+      - app_mentions:read
+      - chat:write
+      - im:read
+      - im:history
+      - channels:history
+      - groups:history
+settings:
+  event_subscriptions:
+    bot_events:
+      - app_mention
+      - message.im
+  interactivity:
+    is_enabled: false
+  org_deploy_enabled: false
+  socket_mode_enabled: true
+  token_rotation_enabled: false
