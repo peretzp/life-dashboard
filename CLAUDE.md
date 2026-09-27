@@ -39,3 +39,14 @@ The entire app is `server.js` — a pure Node.js HTTP server (no framework, no b
 - Downloads: `~/Downloads/`
 
 **Shell command pattern:** All system queries use the `run(cmd, timeout)` helper which wraps `execSync` with a 5-second default timeout and returns `'—'` on failure.
+
+## Practices
+
+Shared engineering practices live in [`docs/PRACTICES.md`](docs/PRACTICES.md), a synced copy. Don't edit it here; changes go to the canonical file and sync back. The rules that matter most for this repo:
+
+1. **This repo is public, so nothing personal goes into git.** No contact details, message text, health, benefits or money matters, location, household members' names or home-network addresses in `server.js`, the task registry or committed logs. Personal content is read at runtime from files outside the repo (such as `~/.claude/TASKS.md`) or from git-ignored paths (`data/`), and shown only on the local dashboard.
+2. **Apple's stores are read-only.** The Life Stream probes `chat.db`, `Photos.sqlite`, `NoteStore.sqlite` and Safari's `History.db` in place. Open them read-only (`sqlite3 -readonly` or a `file:...?mode=ro` URI) and never write, checkpoint or vacuum them. The `sqliteQuery()` helper does not pass a read-only flag yet.
+3. **Probes are short and bounded.** Each one returns counts, never message text. New queries on the big stores use a date window and a LIMIT.
+4. **One failing source doesn't blank the page.** Each probe catches its own error and says why ("no Full Disk Access" is reported separately from "file not found"), and the other streams still render.
+5. **Cloud sessions can't run this.** Every data source is on the Mac (`$HOME`, the LAN, Tailscale). A cloud session can edit code but can't verify it, so it writes the remaining steps under a dated `## Open threads` heading here, with exact commands, for a session on the Mac.
+6. **Smoke-test against a fake `$HOME`.** `server.js` reads everything under `process.env.HOME`, so run it with `HOME` pointed at a temp dir holding synthetic stores (and a throwaway self-signed cert in `.ssl/`) before pushing.
