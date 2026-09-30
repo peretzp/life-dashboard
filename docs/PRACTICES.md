@@ -11,11 +11,12 @@
 
 ## Apple's local stores (Contacts, Messages, Voice Memos, Photos, Notes)
 
-- **Read-only, always.** Never open Apple's files for writing. Never checkpoint, vacuum or lock them.
+- **Read-only, always.** Never open Apple's files for writing, checkpoint or vacuum them, or take an exclusive write lock. Normal brief SQLite read locks are part of a consistent read; never claim that a live read has no locks.
 - **Tools that change data go through Apple's own interfaces** (the Contacts framework, AppleScript, Shortcuts), never by editing the SQLite files. Export a backup first. Direct edits bypass iCloud sync and can corrupt the store on every device.
-- **Small stores (a few MB) get a snapshot:** copy the database and its `-wal` into a temp dir, but not the `-shm`, and open the copy.
-  - *Why not `immutable=1`:* it makes SQLite skip the write-ahead log, so recent rows silently disappear. On 2026-08-10 that hid 7 voice memos, one of them 22 hours old.
-  - *Why not the `-shm`:* a copied `-shm` indexes a slightly different moment than the copied WAL, and SQLite trusts it and recovers only part of the log. Regression check R002 caught this.
+- **Small stores (a few MB) need a consistent snapshot.** Where access is authorized, use SQLite's online backup API with a read-only source connection and a separate temporary destination, or `sqlite3 -readonly` with `.backup` to a separate destination. Check successful completion and the destination's integrity before querying it. A successful integrity check alone does not prove an arbitrary file copy was consistent.
+  - Do not copy a live database and its `-wal` in separate filesystem operations and call the result a snapshot: concurrent transactions or checkpoints can produce mismatched versions. Copying is safe only when the source is demonstrably quiescent for the whole copy and any required recovery files belong to that same state; do not stop Apple's services to force this.
+  - If the consistent read/export is denied, report the access limitation and defer. Do not bypass it with raw file copies. Apple's supported export interfaces are another option where available and authorized.
+  - Source: SQLite's [online backup documentation](https://sqlite.org/backup.html) and [backup corruption guidance](https://sqlite.org/howtocorrupt.html#_backup_or_restore_while_a_transaction_is_active).
 - **Big stores (GBs, such as `chat.db` or `Photos.sqlite`) are opened in place with `mode=ro`,** for one short query, then closed. Copying gigabytes per lookup wastes disk and I/O.
 - **Every query on a big store is bounded** by a date window and a LIMIT, goes through indexed join tables, and filters out non-content rows in SQL (for Messages: tapbacks and thread events). Never scan message text across a whole table.
 - **Check the schema before selecting** (`PRAGMA table_info`). Apple adds and drops columns between macOS releases.
